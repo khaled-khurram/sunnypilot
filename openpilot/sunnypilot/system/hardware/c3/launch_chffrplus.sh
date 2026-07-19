@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 SP_C3_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
-DIR="$( cd "$SP_C3_DIR/../../../.." >/dev/null 2>&1 && pwd )"
+DIR="$( cd "$SP_C3_DIR/../../../../.." >/dev/null 2>&1 && pwd )"
 
 source "$SP_C3_DIR/launch_env.sh"
 
@@ -19,12 +19,12 @@ function agnos_init {
 
 
   if [ $(< /VERSION) != "$AGNOS_VERSION" ]; then
-    AGNOS_PY="$DIR/system/hardware/tici/agnos.py"
+    AGNOS_PY="$DIR/openpilot/common/hardware/tici/agnos.py"
     MANIFEST="$SP_C3_DIR/agnos.json"
     if $AGNOS_PY --verify $MANIFEST; then
       sudo reboot
     fi
-    $DIR/system/hardware/tici/updater $AGNOS_PY $MANIFEST
+    $DIR/openpilot/common/hardware/tici/updater $AGNOS_PY $MANIFEST
   fi
 }
 
@@ -70,6 +70,14 @@ function launch {
   ln -sfn $(pwd) /data/pythonpath
   export PYTHONPATH="$PWD"
 
+  # submodule package symlinks for PYTHONPATH imports on device.
+  # on PC these come from editable installs via pyproject.toml / uv.
+  ln -sfn msgq_repo/msgq msgq
+  ln -sfn opendbc_repo/opendbc opendbc
+  ln -sfn rednose_repo/rednose rednose
+  ln -sfn teleoprtc_repo/teleoprtc teleoprtc
+  ln -sfn tinygrad_repo/tinygrad tinygrad
+
   # hardware specific init
   if [ -f /AGNOS ]; then
     agnos_init
@@ -79,7 +87,7 @@ function launch {
   tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
   # start manager
-  cd $DIR/system/manager
+  cd $DIR/openpilot/system/manager
   if [ ! -f $DIR/prebuilt ]; then
     ./build.py
   fi
