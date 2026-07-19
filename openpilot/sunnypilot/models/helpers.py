@@ -27,9 +27,10 @@ _LAST_VALIDATED_RAW = None
 
 
 def _compute_hash(file_path: str) -> str | None:
-  from openpilot.common.file_chunker import read_file_chunked
+  from openpilot.common.file_chunker import open_file_chunked
   try:
-    return hashlib.sha256(read_file_chunked(file_path)).hexdigest().lower()
+    with open_file_chunked(file_path) as file:
+      return hashlib.file_digest(file, "sha256").hexdigest().lower()
   except FileNotFoundError:
     return None
 
