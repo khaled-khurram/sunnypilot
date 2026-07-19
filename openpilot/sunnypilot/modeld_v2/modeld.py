@@ -42,7 +42,7 @@ from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 
-PROCESS_NAME = "selfdrive.modeld.modeld_tinygrad"
+PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
 
 
 def _pkl_exists(path):
