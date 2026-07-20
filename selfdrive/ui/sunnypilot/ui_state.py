@@ -215,11 +215,13 @@ class UIStateSP:
       self.params.remove("IntelligentCruiseButtonManagement")
       self.has_icbm = False
 
-    # Cruise features requiring longitudinal or ICBM
+    # Cruise features requiring longitudinal or ICBM (actual button/gas/brake actuation)
     if not (has_long or self.has_icbm):
       self.params.remove("CustomAccIncrementsEnabled")
-      self.params.remove("SmartCruiseControlVision")
-      self.params.remove("SmartCruiseControlMap")
+
+    # NOTE(phase1-curve-advisory): SmartCruiseControlVision/Map are read-only speed-target
+    # computations reused for the curve-speed advisory - they don't need longitudinal
+    # control or ICBM to be useful, unlike the actuation-dependent features above.
 
 
 class DeviceSP:
