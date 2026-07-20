@@ -69,6 +69,7 @@ class SmartCruiseControlMap:
   a_ego: float = 0.
   output_v_target: float = V_CRUISE_UNSET
   output_a_target: float = 0.
+  distance: float = 0.
 
   def __init__(self):
     self.params = Params()
@@ -170,17 +171,19 @@ class SmartCruiseControlMap:
         max_d += calculate_distance(t, 0, TARGET_ACCEL, min_accel_v)
 
       if d < max_d + tv * TARGET_OFFSET:
-        valid_velocities.append((float(tv), tlat, tlon))
+        valid_velocities.append((float(tv), tlat, tlon, d))
 
     # Find the smallest velocity we need to adjust for
     min_v = 100.0
     target_lat = 0.0
     target_lon = 0.0
-    for tv, lat, lon in valid_velocities:
+    target_distance = 0.0
+    for tv, lat, lon, d in valid_velocities:
       if tv < min_v:
         min_v = tv
         target_lat = lat
         target_lon = lon
+        target_distance = d
 
     if self.v_target < min_v and not (self.target_lat == 0 and self.target_lon == 0):
       for i in range(len(forward_points)):
@@ -192,16 +195,19 @@ class SmartCruiseControlMap:
           continue
 
         if tlat == self.target_lat and tlon == self.target_lon and tv == self.v_target:
+          self.distance = forward_distances[i]
           return
 
       # not found so let's reset
       self.v_target = 0.0
       self.target_lat = 0.0
       self.target_lon = 0.0
+      self.distance = 0.0
 
     self.v_target = min_v
     self.target_lat = target_lat
     self.target_lon = target_lon
+    self.distance = target_distance
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, TURNING

@@ -72,6 +72,23 @@ def speed_limit_pre_active_alert(CP: car.CarParams, CS: car.CarState, sm: messag
     Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleLow, .1)
 
 
+def curve_speed_advisory_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  scc_map = sm['longitudinalPlanSP'].smartCruiseControl.map
+  speed = round(scc_map.vTarget * (CV.MS_TO_KPH if metric else CV.MS_TO_MPH))
+  speed_unit = "km/h" if metric else "mph"
+
+  if metric:
+    dist_str = f"{round(scc_map.distance)} m"
+  else:
+    dist_str = f"{round(scc_map.distance * 3.28084)} ft"
+
+  return Alert(
+    "Curve Ahead",
+    f"reduce to {speed} {speed_unit} in {dist_str}",
+    AlertStatus.normal, AlertSize.mid,
+    Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 4.)
+
+
 class EventsSP(EventsBase):
   def __init__(self):
     super().__init__()
@@ -242,5 +259,9 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       "",
       AlertStatus.normal, AlertSize.none,
       Priority.MID, VisualAlert.none, AudibleAlert.prompt, 3.),
+  },
+
+  EventNameSP.curveSpeedAdvisory: {
+    ET.WARNING: curve_speed_advisory_alert,
   },
 }

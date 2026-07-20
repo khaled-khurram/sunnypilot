@@ -226,6 +226,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       aTarget @2 :Float32;
       enabled @3 :Bool;
       active @4 :Bool;
+      distance @5 :Float32;
     }
 
     enum VisionState {
@@ -342,6 +343,7 @@ struct OnroadEventSP @0xda96579883444c35 {
     speedLimitChanged @21;
     speedLimitPending @22;
     e2eChime @23;
+    curveSpeedAdvisory @24;
   }
 }
 
