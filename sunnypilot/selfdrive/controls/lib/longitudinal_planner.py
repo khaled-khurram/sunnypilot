@@ -55,7 +55,7 @@ class LongitudinalPlannerSP:
 
     # Smart Cruise Control
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
-    self.curve_advisory.update(self.scc.map.state, long_enabled, self.events_sp)
+    self.curve_advisory.update(self.scc.map.state, long_enabled, v_ego, self.events_sp)
 
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm)

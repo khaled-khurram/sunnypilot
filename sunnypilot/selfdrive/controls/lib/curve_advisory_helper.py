@@ -8,11 +8,17 @@ from cereal import custom
 
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
+from openpilot.common.constants import CV
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 MapState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
 EventNameSP = custom.OnroadEventSP.EventName
+
+# Below this speed, don't bother - keeps city/residential curves and roundabouts
+# quiet. This was designed for the highway/backroad "advance warning" case, not
+# urban maneuvering. Tune based on how it feels in practice.
+MIN_ADVISORY_SPEED = 35 * CV.MPH_TO_MS
 
 
 class CurveAdvisoryHelper:
@@ -32,13 +38,13 @@ class CurveAdvisoryHelper:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self._params.get_bool("CurveSpeedAdvisory")
 
-  def update(self, map_state: int, long_enabled: bool, events_sp: EventsSP) -> None:
+  def update(self, map_state: int, long_enabled: bool, v_ego: float, events_sp: EventsSP) -> None:
     self._read_params()
 
     is_active = map_state == MapState.turning
 
     # Rising edge only - fire once per curve, not every frame while active.
-    if self.enabled and long_enabled and is_active and not self.was_active:
+    if self.enabled and long_enabled and v_ego >= MIN_ADVISORY_SPEED and is_active and not self.was_active:
       events_sp.add(EventNameSP.curveSpeedAdvisory)
 
     self.was_active = is_active
