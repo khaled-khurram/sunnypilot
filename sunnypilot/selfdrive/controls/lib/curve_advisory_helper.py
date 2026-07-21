@@ -6,7 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from cereal import custom
 
-from openpilot.common.params import Params
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.constants import CV
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
@@ -31,12 +31,20 @@ class CurveAdvisoryHelper:
   def __init__(self):
     self._params = Params()
     self.frame = -1
-    self.enabled = self._params.get_bool("CurveSpeedAdvisory")
+    # CurveSpeedAdvisory predates the compiled params allowlist on prebuilt/release
+    # branches; default enabled until a real reinstall registers the key natively.
+    try:
+      self.enabled = self._params.get_bool("CurveSpeedAdvisory")
+    except UnknownKeyName:
+      self.enabled = True
     self.was_active = False
 
   def _read_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      self.enabled = self._params.get_bool("CurveSpeedAdvisory")
+      try:
+        self.enabled = self._params.get_bool("CurveSpeedAdvisory")
+      except UnknownKeyName:
+        self.enabled = True
 
   def update(self, map_state: int, long_enabled: bool, v_ego: float, events_sp: EventsSP) -> None:
     self._read_params()
