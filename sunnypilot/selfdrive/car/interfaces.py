@@ -86,8 +86,12 @@ def _cleanup_unsupported_params(CP: structs.CarParams, CP_SP: structs.CarParamsS
     cloudlog.warning("openpilot Longitudinal Control and ICBM not available, cleaning up params")
     params.remove("DynamicExperimentalControl")
     params.remove("CustomAccIncrementsEnabled")
-    params.remove("SmartCruiseControlVision")
-    params.remove("SmartCruiseControlMap")
+    # NOTE(phase1-curve-advisory): SmartCruiseControlVision/Map are read-only speed-target
+    # computations reused for the curve-speed advisory - they don't need longitudinal
+    # control or ICBM to be useful, unlike the actuation-dependent params above. This mirrors
+    # the same carve-out already made in selfdrive/ui/sunnypilot/ui_state.py; this is a second,
+    # independent enforcement point (runs every boot via card.py, not just the settings UI) that
+    # was wiping the same params on every real drive despite that earlier fix.
 
   set_speed_limit_assist_availability(CP, CP_SP, params)
 
