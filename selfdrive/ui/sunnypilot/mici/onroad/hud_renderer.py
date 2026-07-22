@@ -12,11 +12,12 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.speed_limit import SpeedLimitRende
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
-# Plain number only - no sign background/border/label. Placed in the vertical gap between the
-# driver-camera icon (bottom edge ~y70) and the steering wheel icon (top edge ~y176), same
-# left-hand column (x16-76) as those two, with a small margin on each side.
-GAP_RECT = rl.Rectangle(0, 76, 160, 94)
-NUMBER_FONT_SIZE = 72
+# Plain number only - no sign background/border/label. Same 60x60 footprint and x-span (16-76)
+# as the driver-camera icon directly above it, and same horizontal center (x=46) as the steering
+# wheel icon below - all three share one column. Vertically centered in the gap between them
+# (camera bottom ~y70, wheel top ~y176).
+GAP_RECT = rl.Rectangle(16, 93, 60, 60)
+NUMBER_FONT_SIZE = 40
 ORANGE = rl.Color(255, 165, 0, 229)  # 255 * 0.9, alpha baked in since we don't animate opacity
 
 
