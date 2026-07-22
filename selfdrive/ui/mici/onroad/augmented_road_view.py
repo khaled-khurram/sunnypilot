@@ -232,8 +232,10 @@ class AugmentedRoadView(CameraView):
     self._hud_renderer.set_can_draw_top_icons(alert_to_render is None)
     self._hud_renderer.set_wheel_critical_icon(alert_to_render is not None and not not_animating_out and
                                                alert_to_render.visual_alert == car.CarControl.HUDControl.VisualAlert.steerRequired)
-    self._alert_renderer.render(self._content_rect)
+    # HUD (MAX badge, wheel, speed limit) renders first so alerts/warnings always draw on top,
+    # never the other way around - a banner should never be obscured by a persistent icon.
     self._hud_renderer.render(self._content_rect)
+    self._alert_renderer.render(self._content_rect)
 
     # Draw fake rounded border
     rl.draw_rectangle_rounded_lines_ex(self._content_rect, 0.2 * 1.02, 10, 50, rl.BLACK)
