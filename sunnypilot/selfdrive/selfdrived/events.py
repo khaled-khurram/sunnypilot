@@ -97,6 +97,20 @@ def lead_closing_advisory_alert(CP: car.CarParams, CS: car.CarState, sm: messagi
     Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 4.)
 
 
+def lead_closing_test_guidance_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  # Validation-tool alert, not part of the shipped advisory - see
+  # lead_closing_test_guidance_helper.py. Opt-in only, off by default.
+  v_target = sm['longitudinalPlanSP'].leadClosingTest.vTarget
+  speed = round(v_target * (CV.MS_TO_KPH if metric else CV.MS_TO_MPH))
+  speed_unit = "km/h" if metric else "mph"
+
+  return Alert(
+    "Ease Off",
+    f"press SET — target ~{speed} {speed_unit}",
+    AlertStatus.normal, AlertSize.mid,
+    Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 3.)
+
+
 class EventsSP(EventsBase):
   def __init__(self):
     super().__init__()
@@ -275,5 +289,9 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   EventNameSP.leadClosingAdvisory: {
     ET.WARNING: lead_closing_advisory_alert,
+  },
+
+  EventNameSP.leadClosingTestGuidance: {
+    ET.WARNING: lead_closing_test_guidance_alert,
   },
 }

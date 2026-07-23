@@ -11,6 +11,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot.selfdrive.controls.lib.curve_advisory_helper import CurveAdvisoryHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.lead_closing_advisory_helper import LeadClosingAdvisoryHelper
+from openpilot.sunnypilot.selfdrive.controls.lib.lead_closing_test_guidance_helper import LeadClosingTestGuidanceHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -31,6 +32,7 @@ class LongitudinalPlannerSP:
     self.scc = SmartCruiseControl()
     self.curve_advisory = CurveAdvisoryHelper()
     self.lead_closing_advisory = LeadClosingAdvisoryHelper()
+    self.lead_closing_test_guidance = LeadClosingTestGuidanceHelper()
     self.resolver = SpeedLimitResolver()
     self.sla = SpeedLimitAssist(CP, CP_SP)
     self.generation = int(model_bundle.generation) if (model_bundle := get_active_bundle()) else None
@@ -60,6 +62,8 @@ class LongitudinalPlannerSP:
     self.curve_advisory.update(self.scc.map.state, long_enabled, v_ego, self.events_sp)
     self.lead_closing_advisory.update(sm['radarState'].leadOne, long_enabled, v_ego,
                                        CS.gasPressed, CS.brakePressed, self.events_sp)
+    self.lead_closing_test_guidance.update(sm['radarState'].leadOne, long_enabled, v_ego, v_cruise_cluster,
+                                            CS.gasPressed, CS.brakePressed, self.events_sp)
 
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm)
@@ -140,6 +144,11 @@ class LongitudinalPlannerSP:
     assist.active = self.sla.is_active
     assist.vTarget = float(self.sla.output_v_target)
     assist.aTarget = float(self.sla.output_a_target)
+
+    # Lead-closing test guidance (validation tool, opt-in, off by default)
+    leadClosingTest = longitudinalPlanSP.leadClosingTest
+    leadClosingTest.vTarget = float(self.lead_closing_test_guidance.v_target)
+    leadClosingTest.active = self.lead_closing_test_guidance.active
 
     # E2E Alerts
     e2eAlerts = longitudinalPlanSP.e2eAlerts

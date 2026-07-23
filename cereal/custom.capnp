@@ -194,6 +194,15 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  leadClosingTest @8 :LeadClosingTest;
+
+  # Phase-3-hardware validation tool only, opt-in via param, off by default -
+  # not part of the shipped LeadClosingAdvisory feature. See
+  # sunnypilot/selfdrive/controls/lib/lead_closing_test_guidance_helper.py
+  struct LeadClosingTest {
+    vTarget @0 :Float32;
+    active @1 :Bool;
+  }
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -345,6 +354,7 @@ struct OnroadEventSP @0xda96579883444c35 {
     e2eChime @23;
     curveSpeedAdvisory @24;
     leadClosingAdvisory @25;
+    leadClosingTestGuidance @26;
   }
 }
 
