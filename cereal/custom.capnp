@@ -344,6 +344,7 @@ struct OnroadEventSP @0xda96579883444c35 {
     speedLimitPending @22;
     e2eChime @23;
     curveSpeedAdvisory @24;
+    leadClosingAdvisory @25;
   }
 }
 

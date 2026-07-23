@@ -89,6 +89,14 @@ def curve_speed_advisory_alert(CP: car.CarParams, CS: car.CarState, sm: messagin
     Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 4.)
 
 
+def lead_closing_advisory_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  return Alert(
+    "Traffic Ahead",
+    "vehicle ahead may be slowing",
+    AlertStatus.normal, AlertSize.mid,
+    Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 4.)
+
+
 class EventsSP(EventsBase):
   def __init__(self):
     super().__init__()
@@ -263,5 +271,9 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   EventNameSP.curveSpeedAdvisory: {
     ET.WARNING: curve_speed_advisory_alert,
+  },
+
+  EventNameSP.leadClosingAdvisory: {
+    ET.WARNING: lead_closing_advisory_alert,
   },
 }
