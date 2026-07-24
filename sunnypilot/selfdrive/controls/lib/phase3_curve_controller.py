@@ -10,7 +10,7 @@ from cereal import custom
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.constants import CV
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import (
-  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, CURVE_ARM_FILE,
+  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, GRACE_PERIOD_S, CURVE_ARM_FILE,
   BUTTON_SET_SHALLOW, BUTTON_RESUME_SHALLOW, Phase3OverrideLatch, Phase3CommandArbiter,
   is_armed, log_shadow_decision,
 )
@@ -119,6 +119,7 @@ class Phase3CurveController:
 
     self.was_active = False    # curve rising-edge tracking, mirrors CurveAdvisoryHelper
     self.was_gated_on = False  # arm+engaged rising-edge, for baseline snapshot
+    self.gated_on_since: float | None = None  # for GRACE_PERIOD_S - see phase3_shared.py
 
     self.baseline_v_cruise_mph: float | None = None  # driver's own pre-Phase-3 set
                                                        # speed, snapshotted once per
@@ -155,6 +156,7 @@ class Phase3CurveController:
       decision=self.decision,
       budget_remaining=self.budget_remaining,
       sim_target_mph=round(self.sim_target_mph, 2) if self.sim_target_mph is not None else None,
+      override_reason=self._override_latch.trip_reason,  # added 2026-07-24, was undiagnosable from the first drive's log
     )
 
   def _step_toward(self, goal_mph: float, clamp_low: float | None, clamp_high: float | None) -> str:
@@ -198,10 +200,18 @@ class Phase3CurveController:
     is_active = map_state == MapState.turning
     gated_on = self.armed and long_enabled
 
+    if gated_on and not self.was_gated_on:
+      self.gated_on_since = self.t  # fresh grace-period start on every new gated-on edge
+
     # Override latch - checked before any policy decision, session-long once tripped.
     # Shared instance: this also latches off any other Phase 3 feature using the same
-    # Phase3OverrideLatch, and vice versa.
-    if gated_on:
+    # Phase3OverrideLatch, and vice versa. GRACE_PERIOD_S (added 2026-07-24, after the
+    # first live drive tripped this in the very first gated-on frame, most likely
+    # residual gasPressed right as cruise engaged) suppresses the CHECK - not arming or
+    # gating - for this long after first becoming gated-on, so an engagement-timing
+    # artifact can't permanently kill the session before it ever ran once. Any override
+    # after the grace window still latches off instantly and permanently, unchanged.
+    if gated_on and self.gated_on_since is not None and (self.t - self.gated_on_since) >= GRACE_PERIOD_S:
       self._override_latch.check(gas_pressed, brake_pressed, steering_pressed)
 
     if not gated_on:

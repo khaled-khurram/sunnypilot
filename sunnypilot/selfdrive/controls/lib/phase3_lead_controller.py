@@ -7,7 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.constants import CV
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import (
-  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, LEAD_ARM_FILE,
+  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, GRACE_PERIOD_S, LEAD_ARM_FILE,
   BUTTON_SET_SHALLOW, BUTTON_RESUME_SHALLOW, Phase3OverrideLatch, Phase3CommandArbiter,
   is_armed, log_shadow_decision,
 )
@@ -87,6 +87,7 @@ class Phase3LeadController:
 
     self.in_episode = False
     self.was_gated_on = False
+    self.gated_on_since: float | None = None  # for GRACE_PERIOD_S - see phase3_shared.py
     self.baseline_v_cruise_mph: float | None = None
     self.sim_target_mph: float | None = None
     self.budget_remaining = 0
@@ -120,6 +121,7 @@ class Phase3LeadController:
       budget_remaining=self.budget_remaining,
       rolling_window_count=len(self.command_times),
       sim_target_mph=round(self.sim_target_mph, 2) if self.sim_target_mph is not None else None,
+      override_reason=self._override_latch.trip_reason,  # added 2026-07-24, was undiagnosable from the first drive's log
     )
 
   def _step_toward(self, goal_mph: float, clamp_low: float | None, clamp_high: float | None) -> str:
@@ -167,9 +169,14 @@ class Phase3LeadController:
 
     gated_on = self.armed and long_enabled
 
+    if gated_on and not self.was_gated_on:
+      self.gated_on_since = self.t  # fresh grace-period start on every new gated-on edge
+
     # Override latch - shared instance: this also latches off curve actuation, and vice
-    # versa, matching "tap brakes once, everything goes dark."
-    if gated_on:
+    # versa, matching "tap brakes once, everything goes dark." GRACE_PERIOD_S (added
+    # 2026-07-24 - see phase3_shared.py's own comment) suppresses the CHECK, not arming
+    # or gating, for this long after first becoming gated-on.
+    if gated_on and self.gated_on_since is not None and (self.t - self.gated_on_since) >= GRACE_PERIOD_S:
       self._override_latch.check(gas_pressed, brake_pressed, steering_pressed)
 
     if not gated_on:

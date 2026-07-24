@@ -39,6 +39,21 @@ ABSOLUTE_FLOOR_MPH = 25.0  # EyeSight's own ACC floor (research/phase3_controlle
 # has held up over more than one session.
 MIN_COMMAND_INTERVAL_S = 2.0
 
+# Added 2026-07-24, post-first-live-test finding: on the actual first drive, the override
+# latch tripped in the very first gated-on frame for both features, before either ever
+# got a chance to evaluate a real decision - "latched-off" was the first and only thing
+# ever logged. Most likely cause: gas is very often still marginally pressed in the exact
+# same frame a driver hits set/resume (you're usually still lightly accelerating right up
+# to the moment of engaging) - an artifact of engagement timing, not a deliberate
+# override. GRACE_PERIOD_S suppresses the override CHECK (not the feature itself - arming
+# and gating are unaffected) for this long after cruise first becomes gated-on, so
+# residual pedal/steering state from the engagement moment can't immediately and
+# permanently kill the session before it ever ran once. Any override AFTER the grace
+# window still latches off instantly and permanently, same as before - this only changes
+# the first ~1.5s after engagement, not the "tap once, everything goes dark" behavior for
+# a genuine mid-drive reaction.
+GRACE_PERIOD_S = 1.5
+
 # Real CAN staleness bound for the command file - tighter than the original design
 # doc's "e.g. 500ms" sketch, since MIN_COMMAND_INTERVAL_S is now 2.0s: a fresh command
 # should always be well under 300ms old by the time carcontroller.py's next 5-frame
@@ -128,6 +143,10 @@ class Phase3OverrideLatch:
 
   def __init__(self):
     self.overridden = False
+    self.trip_reason: str | None = None  # e.g. "gas", "brake+steering" - which signal(s)
+                                           # actually tripped it, added 2026-07-24 after
+                                           # the first live drive left this undiagnosable
+                                           # from the shadow log alone
 
   def check(self, gas_pressed: bool, brake_pressed: bool, steering_pressed: bool) -> None:
     # No real-button-press check here (2026-07-24 postmortem): CS.buttonEvents, the
@@ -140,8 +159,13 @@ class Phase3OverrideLatch:
     # constants duplicated there, see that file's own _phase3_read_command_if_safe)
     # already re-checks the real button-press condition correctly every cycle from the
     # object that actually has it - this latch not seeing it doesn't weaken that.
-    if gas_pressed or brake_pressed or steering_pressed:
+    if self.overridden:
+      return  # already tripped - don't overwrite the reason that actually caused it
+    reasons = [name for name, pressed in
+               (("gas", gas_pressed), ("brake", brake_pressed), ("steering", steering_pressed)) if pressed]
+    if reasons:
       self.overridden = True
+      self.trip_reason = "+".join(reasons)
 
 
 def log_shadow_decision(feature: str, **fields) -> None:
