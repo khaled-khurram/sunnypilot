@@ -10,7 +10,7 @@ from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot.selfdrive.controls.lib.curve_advisory_helper import CurveAdvisoryHelper
-from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import Phase3OverrideLatch
+from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import Phase3OverrideLatch, Phase3CommandArbiter
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_curve_controller import Phase3CurveController
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_lead_controller import Phase3LeadController
 from openpilot.sunnypilot.selfdrive.controls.lib.lead_closing_advisory_helper import LeadClosingAdvisoryHelper
@@ -37,8 +37,13 @@ class LongitudinalPlannerSP:
     # Shared across every Phase 3 actuation feature - one override event latches all of
     # them off together (see phase3_shared.Phase3OverrideLatch docstring).
     self.phase3_override_latch = Phase3OverrideLatch()
-    self.phase3_curve_controller = Phase3CurveController(self.phase3_override_latch)  # shadow-mode only
-    self.phase3_lead_controller = Phase3LeadController(self.phase3_override_latch)    # shadow-mode only
+    # Shared arbiter: only one real button command can be written per planner cycle -
+    # curve controller is called first below and wins ties on purpose (see
+    # Phase3CommandArbiter's own docstring). Also enforces the whole-drive
+    # SESSION_COMMAND_CAP backstop across both features combined.
+    self.phase3_command_arbiter = Phase3CommandArbiter()
+    self.phase3_curve_controller = Phase3CurveController(self.phase3_override_latch, self.phase3_command_arbiter)
+    self.phase3_lead_controller = Phase3LeadController(self.phase3_override_latch, self.phase3_command_arbiter)
     self.lead_closing_advisory = LeadClosingAdvisoryHelper()
     self.lead_closing_test_guidance = LeadClosingTestGuidanceHelper()
     self.resolver = SpeedLimitResolver()
@@ -68,6 +73,7 @@ class LongitudinalPlannerSP:
     # Smart Cruise Control
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
     self.curve_advisory.update(self.scc.map.state, long_enabled, v_ego, self.events_sp)
+    self.phase3_command_arbiter.new_cycle()  # reset the one-write-per-cycle gate before either controller runs
     self.phase3_curve_controller.update(self.scc.map.state, self.scc.map.distance, self.scc.map.output_v_target,
                                          long_enabled, v_ego, v_cruise,
                                          CS.gasPressed, CS.brakePressed, CS.steeringPressed, CS.cruise_button)

@@ -4,12 +4,12 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.constants import CV
-from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import (
-  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, Phase3OverrideLatch, log_shadow_decision,
+  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, LEAD_ARM_FILE,
+  BUTTON_SET_SHALLOW, BUTTON_RESUME_SHALLOW, Phase3OverrideLatch, Phase3CommandArbiter,
+  is_armed, log_shadow_decision,
 )
 
 # --- reused as-is from the already-shipped/backtested advisory + guidance helpers,
@@ -71,12 +71,13 @@ class Phase3LeadController:
   this - this class only adds actuation on top, gated separately.
   """
 
-  def __init__(self, override_latch: Phase3OverrideLatch):
-    self._params = Params()
+  def __init__(self, override_latch: Phase3OverrideLatch, command_arbiter: Phase3CommandArbiter):
     self._override_latch = override_latch
+    self._arbiter = command_arbiter  # SHARED with the curve controller - only one real
+                                       # command can be written per planner cycle
     self.frame = -1
     self.armed = False
-    self._read_params()
+    self._read_arm_state()
 
     self.closing_since: float | None = None
     self.clear_since: float | None = None
@@ -95,16 +96,12 @@ class Phase3LeadController:
     self.decision = "inert-not-armed"
     self._last_logged_decision = None
 
-  def _read_params(self) -> None:
-    if self.frame == -1 or self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      try:
-        self.armed = self._params.get_bool("Phase3LeadArmed")
-      except UnknownKeyName:
-        # Same compiled-Params-allowlist landmine Phase3Armed and CurveSpeedAdvisory
-        # already have on this prebuilt branch - defaults OFF until a real reinstall
-        # registers the key natively. Independent of Phase3Armed on purpose (§9: separate
-        # arm switch, so curve actuation can be trusted/used before lead actuation is).
-        self.armed = False
+  def _read_arm_state(self) -> None:
+    # Flag-file, not Params() - see phase3_shared.py's LEAD_ARM_FILE comment for why.
+    # Independent of CURVE_ARM_FILE on purpose (§9: separate arm switch, so curve
+    # actuation can be trusted/used before lead actuation is).
+    if self.frame == -1 or self.frame % int(1.0 / DT_MDL) == 0:
+      self.armed = is_armed(LEAD_ARM_FILE)
 
   def _rolling_window_ok(self) -> bool:
     cutoff = self.t - ROLLING_WINDOW_S
@@ -138,6 +135,12 @@ class Phase3LeadController:
     if not self._rolling_window_ok():
       return "hold-rolling-cap"
     step = STEP_MPH if goal_mph > self.sim_target_mph else -STEP_MPH
+    button_value = BUTTON_RESUME_SHALLOW if step > 0 else BUTTON_SET_SHALLOW
+    if not self._arbiter.try_write(button_value):
+      # Curve controller already wrote this cycle (it goes first, wins ties on
+      # purpose - see Phase3CommandArbiter's docstring), or the whole-drive session cap
+      # is hit - hold for one more cycle rather than silently drop.
+      return "hold-arbiter"
     new_target = self.sim_target_mph + step
     if clamp_low is not None:
       new_target = max(new_target, clamp_low)
@@ -154,7 +157,7 @@ class Phase3LeadController:
              cruise_button: int) -> None:
     # `lead` is a radarState.leadOne capnp reader (cereal/log.capnp LeadData), same as
     # lead_closing_advisory_helper.py - not opendbc's CarState/CarParams structs.
-    self._read_params()
+    self._read_arm_state()
     self.t += DT_MDL
 
     v_current_mph = v_ego * MS_TO_MPH

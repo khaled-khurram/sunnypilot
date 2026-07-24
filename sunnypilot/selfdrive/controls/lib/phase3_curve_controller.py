@@ -7,12 +7,12 @@ See the LICENSE.md file in the root directory for more details.
 import math
 
 from cereal import custom
-from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.constants import CV
-from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import (
-  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, Phase3OverrideLatch, log_shadow_decision,
+  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, CURVE_ARM_FILE,
+  BUTTON_SET_SHALLOW, BUTTON_RESUME_SHALLOW, Phase3OverrideLatch, Phase3CommandArbiter,
+  is_armed, log_shadow_decision,
 )
 
 MapState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
@@ -107,14 +107,15 @@ class Phase3CurveController:
   code reads. This run cannot affect real CAN output even in principle.
   """
 
-  def __init__(self, override_latch: Phase3OverrideLatch):
-    self._params = Params()
+  def __init__(self, override_latch: Phase3OverrideLatch, command_arbiter: Phase3CommandArbiter):
     self._override_latch = override_latch  # SHARED across every Phase 3 feature - see
                                               # phase3_shared.py's Phase3OverrideLatch
                                               # docstring for why this must not be private
+    self._arbiter = command_arbiter  # SHARED with the lead controller - only one real
+                                       # command can be written per planner cycle
     self.frame = -1
     self.armed = False
-    self._read_params()
+    self._read_arm_state()
 
     self.was_active = False    # curve rising-edge tracking, mirrors CurveAdvisoryHelper
     self.was_gated_on = False  # arm+engaged rising-edge, for baseline snapshot
@@ -132,16 +133,13 @@ class Phase3CurveController:
     self.decision = "inert-not-armed"
     self._last_logged_decision = None
 
-  def _read_params(self) -> None:
-    if self.frame == -1 or self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      try:
-        self.armed = self._params.get_bool("Phase3Armed")
-      except UnknownKeyName:
-        # Known landmine on this prebuilt branch, same one CurveSpeedAdvisory already
-        # hit: this key isn't in the compiled params allowlist yet, so this always
-        # falls back to the safe default until a real reinstall registers it natively.
-        # Defaults OFF (unlike the advisories), per the deliberate-enable design in §3.5.
-        self.armed = False
+  def _read_arm_state(self) -> None:
+    # Flag-file, not Params() - see phase3_shared.py's CURVE_ARM_FILE comment for why.
+    # Checked every ~1s (PARAMS_UPDATE_PERIOD-equivalent cadence), not every frame - a
+    # stat() call every 20ms is unnecessary overhead for a value that only changes when
+    # a human explicitly touches/removes the file.
+    if self.frame == -1 or self.frame % int(1.0 / DT_MDL) == 0:
+      self.armed = is_armed(CURVE_ARM_FILE)
 
   def _log(self, v_current_mph: float, v_target_mph: float, dist_needed_ft: float,
             dist_available_ft: float) -> None:
@@ -170,6 +168,12 @@ class Phase3CurveController:
     if (self.t - self.last_command_t) < MIN_COMMAND_INTERVAL_S:
       return "hold-rate-limited"
     step = STEP_MPH if goal_mph > self.sim_target_mph else -STEP_MPH
+    button_value = BUTTON_RESUME_SHALLOW if step > 0 else BUTTON_SET_SHALLOW
+    if not self._arbiter.try_write(button_value):
+      # Lead controller already wrote this cycle, or the whole-drive session cap is
+      # hit - hold this step for one more ~50ms cycle rather than silently drop it;
+      # the same decision will be re-evaluated and re-attempted next frame.
+      return "hold-arbiter"
     new_target = self.sim_target_mph + step
     if clamp_low is not None:
       new_target = max(new_target, clamp_low)
@@ -184,7 +188,7 @@ class Phase3CurveController:
              long_enabled: bool, v_ego: float, v_cruise: float,
              gas_pressed: bool, brake_pressed: bool, steering_pressed: bool,
              cruise_button: int) -> None:
-    self._read_params()
+    self._read_arm_state()
     self.t += DT_MDL
 
     v_current_mph = v_ego * MS_TO_MPH
