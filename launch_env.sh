@@ -20,3 +20,8 @@ if [ -z "$AGNOS_VERSION" ]; then
 fi
 
 export STAGING_ROOT="/data/safe_staging"
+
+# Tailscale persistence: /var is tmpfs on this device (confirmed 2026-07-24 --
+# root's crontab is wiped every reboot), so cron can't be the boot hook. This
+# script is the earliest persistent (/data-backed) thing sourced every boot.
+[ -x /data/tailscale-state/start_tailscaled.sh ] && /data/tailscale-state/start_tailscaled.sh &
