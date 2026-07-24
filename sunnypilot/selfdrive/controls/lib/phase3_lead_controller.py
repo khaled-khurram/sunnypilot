@@ -7,7 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.constants import CV
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import (
-  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, GRACE_PERIOD_S, LEAD_ARM_FILE,
+  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, GRACE_PERIOD_S, SETTLE_TIME_S, LEAD_ARM_FILE,
   BUTTON_SET_SHALLOW, BUTTON_RESUME_SHALLOW, Phase3OverrideLatch, Phase3CommandArbiter,
   is_armed, log_shadow_decision,
 )
@@ -199,6 +199,15 @@ class Phase3LeadController:
       self.sim_target_mph = v_cruise_mph
 
     if self.sim_target_mph is None:
+      self.sim_target_mph = v_cruise_mph
+
+    # Resync both baseline and sim_target to the real, current set speed after a genuine
+    # idle period - same fix as the curve controller, see its own comment for the full
+    # explanation (V_CRUISE_MAX-instead-of-real-set-speed race at the engagement instant,
+    # found 2026-07-24 on the first live drive; time-gated rather than comparing
+    # sim_target to v_cruise so it self-heals even when both started wrong together).
+    if not self.in_episode and (self.t - self.last_command_t) > SETTLE_TIME_S:
+      self.baseline_v_cruise_mph = v_cruise_mph
       self.sim_target_mph = v_cruise_mph
 
     closing = (lead.status and lead.vRel < CLOSING_VREL_THRESHOLD

@@ -65,6 +65,19 @@ MIN_COMMAND_INTERVAL_S = 0.4
 # a genuine mid-drive reaction.
 GRACE_PERIOD_S = 1.5
 
+# Added 2026-07-24, same first-drive postmortem as SESSION_COMMAND_CAP below: the
+# baseline/sim_target snapshot taken once at the gated-on rising edge captured
+# V_CRUISE_MAX (145kph/90.1mph, a fallback ceiling) instead of the real set speed,
+# because v_cruise hadn't settled in that exact first frame - same race-condition
+# category as GRACE_PERIOD_S above, different piece of state. Fix: after this long with
+# no active intervention AND no recently-sent command (i.e. genuinely idle, not mid-
+# restore), both baseline_v_cruise_mph and sim_target_mph resync to the real, current
+# v_cruise - self-healing regardless of how either got wrong, and also tracks the driver
+# adjusting their real set speed mid-drive via real button presses (which neither
+# controller has any other way to observe - see the override-latch docstring for why
+# real button presses aren't visible at this layer at all).
+SETTLE_TIME_S = 2.0
+
 # Real CAN staleness bound for the command file - tighter than the original design
 # doc's "e.g. 500ms" sketch, since MIN_COMMAND_INTERVAL_S is now 2.0s: a fresh command
 # should always be well under 300ms old by the time carcontroller.py's next 5-frame
@@ -79,7 +92,19 @@ COMMAND_STALENESS_S = 0.3
 # live this time). This is the old original §2 "MAX_COMMANDS_PER_SESSION" concept,
 # reintroduced specifically as extra defense-in-depth for the very first live test, on
 # top of (not instead of) the per-event sizing.
-SESSION_COMMAND_CAP = 30
+#
+# Raised 2026-07-24, after the first real live drive: 30 was hit and exhausted by a
+# SINGLE curve (~20+ writes) because MTSC's own live distance/target estimate keeps
+# shifting slightly on approach, and the controller re-corrects on every shift, not
+# just once per curve - a real, legitimate usage pattern, not a bug. With no reset
+# mechanism for the rest of the drive, this silently blocked every subsequent curve
+# and lead event for the remainder of the session (confirmed in the shadow log:
+# curve 3 computed a correct, sensible request and logged "hold-arbiter" instead of
+# firing it). 500 gives real headroom for many curves/episodes across a full drive
+# (500 * MIN_COMMAND_INTERVAL_S = 200s of continuous firing before it would even
+# trigger - still a real backstop against an actually-runaway policy bug, not a
+# limit that legitimate use bumps into).
+SESSION_COMMAND_CAP = 500
 
 # cruise_button values, opendbc/car/subaru/carcontroller.py's own comment:
 # 1 = main, 2 = set shallow, 3 = set deep, 4 = resume shallow, 5 = resume deep

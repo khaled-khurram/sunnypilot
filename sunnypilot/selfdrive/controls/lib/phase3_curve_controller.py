@@ -10,7 +10,7 @@ from cereal import custom
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.constants import CV
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import (
-  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, GRACE_PERIOD_S, CURVE_ARM_FILE,
+  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, GRACE_PERIOD_S, SETTLE_TIME_S, CURVE_ARM_FILE,
   BUTTON_SET_SHALLOW, BUTTON_RESUME_SHALLOW, Phase3OverrideLatch, Phase3CommandArbiter,
   is_armed, log_shadow_decision,
 )
@@ -237,6 +237,16 @@ class Phase3CurveController:
       self.sim_target_mph = v_cruise_mph
 
     if self.sim_target_mph is None:
+      self.sim_target_mph = v_cruise_mph
+
+    # Resync both baseline and sim_target to the real, current set speed after a genuine
+    # idle period (no active curve, nothing recently sent) - see phase3_shared.py's
+    # SETTLE_TIME_S comment for the full story. Gating on time-since-last-command rather
+    # than "sim_target == v_cruise" specifically so this self-heals even when BOTH were
+    # wrong together from the start (the actual first-drive failure mode - comparing them
+    # to each other never catches that), without corrupting an in-progress restore.
+    if not is_active and (self.t - self.last_command_t) > SETTLE_TIME_S:
+      self.baseline_v_cruise_mph = v_cruise_mph
       self.sim_target_mph = v_cruise_mph
 
     # Rising edge of a new curve resets the fire-down budget; falling edge (curve just
