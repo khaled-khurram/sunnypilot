@@ -9,8 +9,8 @@ from openpilot.common.constants import CV
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import (
   STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, GRACE_PERIOD_S, SETTLE_TIME_S,
   SLF_ARM_FILE, SLF_BUFFER_MPH, SEGMENT_DEBOUNCE_S, DELTA_NOISE_FLOOR_MPH,
-  SELF_ATTRIBUTION_WINDOW_S, BUTTON_SET_SHALLOW, Phase3OverrideLatch, Phase3CommandArbiter,
-  is_armed, log_shadow_decision,
+  SELF_ATTRIBUTION_WINDOW_S, BUTTON_SET_SHALLOW, BUTTON_RESUME_SHALLOW,
+  Phase3OverrideLatch, Phase3CommandArbiter, is_armed, log_shadow_decision,
 )
 
 MS_TO_MPH = CV.MS_TO_MPH
@@ -19,9 +19,18 @@ MS_TO_MPH = CV.MS_TO_MPH
 class Phase3SlfController:
   """
   Shadow/live Phase 3 speed-limit-following (research/phase3_speed_limit_following_design.md).
-  Third Phase 3 actuation feature, alongside curve and lead. Decrease-only for v1 (§2 of
-  the design doc): walks the target down toward a newly-detected, debounced posted speed
-  limit + SLF_BUFFER_MPH, using the same shallow-SET/shared-arbiter primitive as curve/lead.
+  Third Phase 3 actuation feature, alongside curve and lead. Follows posted speed limits
+  in BOTH directions as of the §2 v1.1 update (2026-07-24) - walks the target toward a
+  newly-detected, debounced posted limit + SLF_BUFFER_MPH, using the same shallow-SET/
+  RESUME/shared-arbiter primitive as curve/lead.
+
+  Auto-raise ceiling, the actual point of the v1.1 design: `target = min(baseline, new
+  limit + buffer)` - never exceeds the driver's own real set speed (`baseline_v_cruise_mph`,
+  same concept and same self-healing settle-resync as curve/lead's own baseline), even
+  when a new zone's limit+buffer would allow more. This is what resolves v1's original
+  "surprise acceleration to a number the driver never chose" concern - it structurally
+  cannot happen, because the ceiling is always something the driver actually dialed in
+  themselves, never a number this controller invented.
 
   Owns the new context-gated button-press routing (§3/§6): since none of the three
   controllers can see a real button press directly (CS.buttonEvents is never populated
@@ -30,7 +39,9 @@ class Phase3SlfController:
   shared Phase3CommandArbiter's own last_write_t (which controller wrote last, and when -
   known with certainty, not inferred from magnitude/direction, which is what made the
   design doc's original proposal wrong: curve's own restore phase legitimately writes
-  upward/RESUME commands too, so "upward = external" was never a safe assumption).
+  upward/RESUME commands too, so "upward = external" was never a safe assumption - and
+  now SLF itself can also legitimately write upward commands, making that assumption
+  even less safe than it already was).
 
   Safety choice made during implementation, not in the original design doc: this new
   routing only changes behavior once Phase3SlfArmed is actually true. If SLF is unarmed,
@@ -48,6 +59,8 @@ class Phase3SlfController:
 
     self.was_gated_on = False
     self.gated_on_since: float | None = None
+    self.baseline_v_cruise_mph: float | None = None  # driver's own real set speed - the
+                                                       # ceiling auto-raise can never exceed
     self.sim_target_mph: float | None = None
     self.last_command_t = -1e9
     self.t = 0.0
@@ -57,7 +70,7 @@ class Phase3SlfController:
     self.segment_pending_limit_mph: float | None = None
     self.segment_pending_since: float | None = None
     self.segment_pinned = False
-    self.slf_target_mph: float | None = None  # None = no active descent this segment
+    self.slf_target_mph: float | None = None  # None = no active pursuit this segment
 
     self.decision = "inert-not-armed"
     self._last_logged_decision = None
@@ -77,27 +90,28 @@ class Phase3SlfController:
       decision=self.decision,
       segment_limit_mph=round(self.current_segment_limit_mph, 1) if self.current_segment_limit_mph is not None else None,
       segment_pinned=self.segment_pinned,
+      baseline_v_cruise_mph=round(self.baseline_v_cruise_mph, 2) if self.baseline_v_cruise_mph is not None else None,
       sim_target_mph=round(self.sim_target_mph, 2) if self.sim_target_mph is not None else None,
       override_reason=self._override_latch.trip_reason,
     )
 
   def _step_toward(self, goal_mph: float) -> str:
+    """Bidirectional as of v1.1 - same shared shallow-step primitive curve/lead use.
+    The goal itself is always already capped at baseline by the caller (§1's
+    min(baseline, limit+buffer) formula), so no separate clamp_high is needed here -
+    unlike curve/lead's restore path, which clamps because its goal IS the baseline."""
     if abs(goal_mph - self.sim_target_mph) < DELTA_NOISE_FLOOR_MPH:
       return "hold"
     if (self.t - self.last_command_t) < MIN_COMMAND_INTERVAL_S:
       return "hold-rate-limited"
-    # Decrease-only v1 (§2): SLF only ever steps down. If goal is somehow above
-    # sim_target (segment recompute raced with a pin release), just stop, don't climb -
-    # that would be the deferred v1.1 auto-raise behavior, not shipped here.
-    if goal_mph >= self.sim_target_mph:
-      return "hold"
-    if not self._arbiter.try_write(BUTTON_SET_SHALLOW):
+    step = STEP_MPH if goal_mph > self.sim_target_mph else -STEP_MPH
+    button_value = BUTTON_RESUME_SHALLOW if step > 0 else BUTTON_SET_SHALLOW
+    if not self._arbiter.try_write(button_value):
       return "hold-arbiter"
-    self.sim_target_mph -= STEP_MPH
-    if self.sim_target_mph < goal_mph:
-      self.sim_target_mph = goal_mph
+    new_target = self.sim_target_mph + step
+    self.sim_target_mph = new_target
     self.last_command_t = self.t
-    return "fire"
+    return "restore" if step > 0 else "fire"
 
   def update(self, speed_limit_mph: float | None, long_enabled: bool, v_ego: float, v_cruise: float,
              gas_pressed: bool, brake_pressed: bool, steering_pressed: bool,
@@ -112,6 +126,7 @@ class Phase3SlfController:
 
     if gated_on and not self.was_gated_on:
       self.gated_on_since = self.t
+      self.baseline_v_cruise_mph = v_cruise_mph  # initial snapshot - self-heals below if wrong
 
     # Pedal overrides: identical, unconditional, shared behavior with curve/lead - not
     # touched by this feature's own context-gating logic, which only applies to buttons.
@@ -122,11 +137,11 @@ class Phase3SlfController:
       self.decision = "inert-not-armed"
       self.was_gated_on = False
       # Don't let any state leak across an arm-cycle boundary into an unrelated later
-      # one (cruise disengage/re-engage, or the arm flag toggling) - a pin or a
-      # remembered segment limit from one drive context has no business influencing a
-      # completely different later one. Found during final review, not the original
-      # design pass - only last_v_cruise_mph had this treatment initially.
+      # one (cruise disengage/re-engage, or the arm flag toggling) - a pin, a remembered
+      # segment limit, or a stale baseline from one drive context has no business
+      # influencing a completely different later one.
       self.last_v_cruise_mph = None
+      self.baseline_v_cruise_mph = None
       self.current_segment_limit_mph = None
       self.segment_pending_limit_mph = None
       self.segment_pending_since = None
@@ -145,13 +160,24 @@ class Phase3SlfController:
     if self.sim_target_mph is None:
       self.sim_target_mph = v_cruise_mph
 
-    # Resync sim_target after a genuine idle period - same fix as curve/lead's own
-    # V_CRUISE_MAX-race postmortem, same reasoning: self-heals regardless of how it got
-    # wrong, and is the only way this controller notices a real, unrelated set-speed
-    # change that happened while SLF had no active descent of its own.
-    descending = self.slf_target_mph is not None and not self.segment_pinned
-    if not descending and (self.t - self.last_command_t) > SETTLE_TIME_S:
+    # Resync sim_target AND baseline after a genuine idle period, same self-healing fix
+    # as curve/lead's own V_CRUISE_MAX-race postmortem - but ONLY before the first-ever
+    # confirmed segment (self.current_segment_limit_mph is None). Two real bugs caught
+    # by testing before shipping, both from over-generalizing that self-heal window:
+    # (1) gating on "converged to slf_target" instead overwrote baseline with the
+    # already-descended value the moment a held-down segment converged (sitting at 50 in
+    # a 45mph town is the ongoing correct state for that whole zone, not a transient
+    # that's "done" like curve's restore is); (2) using slf_target_mph itself as the gate
+    # still broke once auto-raise was added, because releasing a constraint set
+    # slf_target_mph back toward baseline rather than to None, so gating on "is it None"
+    # never actually re-opened after the first segment. Gating on "has any segment EVER
+    # been confirmed" instead closes this self-heal window permanently after the first
+    # one - by design: once real per-segment logic is running, baseline only ever
+    # changes again via an explicit driver correction (the pin-capture path below), never
+    # by silently re-sampling whatever v_cruise happens to read at an idle moment.
+    if self.current_segment_limit_mph is None and (self.t - self.last_command_t) > SETTLE_TIME_S:
       self.sim_target_mph = v_cruise_mph
+      self.baseline_v_cruise_mph = v_cruise_mph
 
     # --- External button-press detection + context-gated routing (§3/§4/§6) ---
     if self.last_v_cruise_mph is not None:
@@ -170,10 +196,14 @@ class Phase3SlfController:
           else:
             # Both dormant - this can't be "about" an active curve/lead event, because
             # neither has one running. Pin it: hold here for the rest of this segment,
-            # don't fight the driver's correction, and don't touch the shared latch.
+            # don't fight the driver's correction, and don't touch the shared latch. Also
+            # update baseline - a real, deliberate manual correction IS the driver
+            # choosing a new real cruising speed, so it becomes the new ceiling
+            # auto-raise respects going forward, not just a one-segment exception.
             self.segment_pinned = True
             self.slf_target_mph = v_cruise_mph
             self.sim_target_mph = v_cruise_mph
+            self.baseline_v_cruise_mph = v_cruise_mph
     self.last_v_cruise_mph = v_cruise_mph
 
     if self._override_latch.overridden:
@@ -185,7 +215,7 @@ class Phase3SlfController:
       self.frame += 1
       return
 
-    # --- Segment/limit tracking (§1/§5) ---
+    # --- Segment/limit tracking (§1/§5, bidirectional as of v1.1) ---
     if speed_limit_mph is not None:
       is_new_reading = (self.current_segment_limit_mph is None
                          or abs(speed_limit_mph - self.current_segment_limit_mph) > 0.5)
@@ -198,15 +228,20 @@ class Phase3SlfController:
           self.segment_pending_since = self.t
         elif (self.t - self.segment_pending_since) >= SEGMENT_DEBOUNCE_S:
           # Confirmed real segment change - fresh, unconstrained recompute (§5), any
-          # earlier pin is explicitly released here, not carried over.
+          # earlier pin is explicitly released here, not carried over. v1.1: works for
+          # a limit going up OR down - the min(baseline, ...) ceiling is what keeps the
+          # up direction safe, not a one-directional guard on the delta's sign.
           self.current_segment_limit_mph = self.segment_pending_limit_mph
           self.segment_pending_limit_mph = None
           self.segment_pinned = False
           candidate = self.current_segment_limit_mph + SLF_BUFFER_MPH
-          if candidate < self.sim_target_mph:  # decrease-only (§2)
-            self.slf_target_mph = max(candidate, ABSOLUTE_FLOOR_MPH)
-          else:
-            self.slf_target_mph = None
+          ceiling = self.baseline_v_cruise_mph if self.baseline_v_cruise_mph is not None else candidate
+          # min(candidate, ceiling) already handles both directions in one formula: if
+          # this zone's own limit+buffer is genuinely lower than the ceiling, that's the
+          # real constraint to hold at; if it's at or above the ceiling, this reduces to
+          # exactly the ceiling itself (= baseline) - meaning "pursue a full return to
+          # what the driver actually set," which is auto-raise, not a special case.
+          self.slf_target_mph = max(min(candidate, ceiling), ABSOLUTE_FLOOR_MPH)
       else:
         self.segment_pending_limit_mph = None  # reading matches current segment, nothing pending
 
