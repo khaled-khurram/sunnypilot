@@ -27,6 +27,20 @@ COMMAND_FILE = "/data/phase3_button_command"
 # rebuild required, no allowlist involved at all.
 CURVE_ARM_FILE = "/data/phase3_curve_armed"
 LEAD_ARM_FILE = "/data/phase3_lead_armed"
+SLF_ARM_FILE = "/data/phase3_slf_armed"  # speed-limit-following, added 2026-07-24 -
+                                           # same isolated-rollout-risk pattern as lead
+
+# Speed-limit-following constants (2026-07-24). Not a runtime-tunable Params() value
+# despite research/phase3_speed_limit_following_design.md §1 suggesting one - that
+# would hit the exact same compiled-Params-allowlist landmine every other new Phase3
+# param already has on this prebuilt branch (see CURVE_ARM_FILE/LEAD_ARM_FILE comments
+# above for why those became flag-files instead). A real runtime-tunable buffer would
+# need the same flag-file-style mechanism if wanted later - not blocking for v1.
+SLF_BUFFER_MPH = 5.0
+SEGMENT_DEBOUNCE_S = 2.5  # guessed, not measured - see the design doc's own §7/§10 flag
+DELTA_NOISE_FLOOR_MPH = 0.4  # below this, a v_cruise frame-to-frame change isn't real
+SELF_ATTRIBUTION_WINDOW_S = 0.3  # covers Q6's ~100ms observed command-to-effect delay
+                                   # plus margin for the telemetry itself to propagate
 
 STEP_MPH = 1.0             # confirmed real shallow-press effect (Q10)
 ABSOLUTE_FLOOR_MPH = 25.0  # EyeSight's own ACC floor (research/phase3_controller_design.md
@@ -128,9 +142,23 @@ class Phase3CommandArbiter:
   def __init__(self):
     self.written_this_cycle = False
     self.total_commands_this_session = 0
+    self.t = 0.0            # shared per-cycle clock, ticked once per planner frame -
+                              # closely aligned with every controller's own self.t since
+                              # all are constructed together and stepped in the same loop
+    self.last_write_t = -1e9  # when ANY controller last wrote a real command - added
+                                # 2026-07-24 for SLF's self-vs-external button-press
+                                # attribution (research/phase3_speed_limit_following_design.md
+                                # §4). This is deliberately NOT inferred from observed
+                                # v_cruise deltas/magnitude matching - the design doc's
+                                # original proposal ("any upward delta is unambiguously
+                                # external") was factually wrong, since curve's own
+                                # restore phase legitimately issues upward/RESUME writes
+                                # too. The arbiter already knows with certainty whether
+                                # ANY controller just wrote something - no inference needed.
 
-  def new_cycle(self) -> None:
+  def new_cycle(self, dt: float) -> None:
     self.written_this_cycle = False
+    self.t += dt
 
   def try_write(self, value: int) -> bool:
     if self.written_this_cycle or self.total_commands_this_session >= SESSION_COMMAND_CAP:
@@ -142,6 +170,7 @@ class Phase3CommandArbiter:
       return False
     self.written_this_cycle = True
     self.total_commands_this_session += 1
+    self.last_write_t = self.t
     return True
 
 
@@ -202,6 +231,21 @@ class Phase3OverrideLatch:
     if reasons:
       self.overridden = True
       self.trip_reason = "+".join(reasons)
+
+  def trip_button(self) -> None:
+    """Distinct from check() - added 2026-07-24 for SLF's context-gated button routing
+    (research/phase3_speed_limit_following_design.md §3/§6). Called only when a real
+    button press was detected (inferred, see phase3_slf_controller.py) AND curve or lead
+    had an active transient event underway at that moment - the exact same "something's
+    wrong, stop everything" outcome as today's unconditional button-kill, just reached via
+    inference instead of a direct cruise_button read (which crashed plannerd once already
+    tonight - see check()'s own comment). A button press while SLF is unarmed, or while
+    curve/lead are both dormant, never calls this - see phase3_slf_controller.py for the
+    routing decision itself, this method only records the outcome once made."""
+    if self.overridden:
+      return
+    self.overridden = True
+    self.trip_reason = "button-while-active"
 
 
 def log_shadow_decision(feature: str, **fields) -> None:

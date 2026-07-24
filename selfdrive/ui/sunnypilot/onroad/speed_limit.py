@@ -112,6 +112,8 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
 
     self.is_cruise_set: bool = False
     self.is_cruise_available: bool = True
+    self.is_cruise_engaged: bool = False  # gates display visibility, added 2026-07-24 -
+                                            # see _render()
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
@@ -161,6 +163,7 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
 
     controls_state = sm['controlsState']
     car_state = sm["carState"]
+    self.is_cruise_engaged = car_state.cruiseState.enabled
 
     v_cruise_cluster = car_state.vCruiseCluster
     self.set_speed = (
@@ -190,7 +193,12 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
 
     alpha = self._pre_active_fade.alpha
 
-    if ui_state.speed_limit_mode != SpeedLimitMode.off:
+    # Only show while cruise is actually engaged (2026-07-24, driver's explicit ask):
+    # "I only turn on cruise if it's, like, highway... in the city if you turn it on
+    # then it's fine because it's important that you know about it too" - the display
+    # is useful exactly when cruise is on, clutter otherwise. §8 of
+    # research/phase3_speed_limit_following_design.md.
+    if ui_state.speed_limit_mode != SpeedLimitMode.off and self.is_cruise_engaged:
       self._draw_sign_main(sign_rect, alpha)
       if self.speed_limit_assist_state == AssistState.preActive:
         self._draw_pre_active_arrow(sign_rect)
