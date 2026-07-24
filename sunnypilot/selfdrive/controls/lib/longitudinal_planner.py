@@ -39,6 +39,7 @@ class LongitudinalPlannerSP:
     # Shared across every Phase 3 actuation feature - one override event latches all of
     # them off together (see phase3_shared.Phase3OverrideLatch docstring).
     self.phase3_override_latch = Phase3OverrideLatch()
+    self.phase3_was_long_enabled = False  # for the latch's clear_on_reengage() edge detection
     # Shared arbiter: only one real button command can be written per planner cycle -
     # curve controller is called first below and wins ties on purpose (see
     # Phase3CommandArbiter's own docstring). Also enforces the whole-drive
@@ -76,6 +77,14 @@ class LongitudinalPlannerSP:
 
     long_enabled = sm['carControl'].enabled
     long_override = sm['carControl'].cruiseControl.override
+
+    # Rising edge of cruise-enabled ("set the cruise again") clears the shared Phase 3
+    # override latch - see Phase3OverrideLatch.clear_on_reengage()'s own docstring for
+    # why this replaced the original whole-drive-lockout behavior. Checked once here,
+    # shared across curve/lead/SLF, not duplicated per controller.
+    if long_enabled and not self.phase3_was_long_enabled:
+      self.phase3_override_latch.clear_on_reengage()
+    self.phase3_was_long_enabled = long_enabled
 
     # Smart Cruise Control
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)

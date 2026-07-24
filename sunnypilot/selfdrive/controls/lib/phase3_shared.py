@@ -201,9 +201,14 @@ class Phase3OverrideLatch:
   single override event (brake/steering/gas/real-button-press) must latch off every
   Phase 3 feature together, not just whichever one happened to be acting at that moment.
   Every controller must hold a reference to the SAME instance, not its own private copy.
-  Re-arming requires a fresh explicit arm (new onroad session/process restart) - there is
-  deliberately no reset() method here, matching research/phase3_controller_design.md §3's
-  "not just skip one frame and silently resume the next" requirement.
+  Re-arms on a fresh cruise engagement (2026-07-24, corrected same night after the user
+  clarified this in plain terms: "if I tap those override latches everything goes dark
+  UNTIL I actually set the cruise again then it all comes back" - NOT "off for the rest
+  of the drive, only clears on a full ignition cycle," which is what an earlier reading
+  of "everything goes dark" had been implemented as. Real, named tradeoff: this is less
+  sticky than a whole-drive lockout - a quick disengage/re-engage brings Phase 3 straight
+  back regardless of whether whatever caused the override is still true. Built this way
+  anyway because that's the explicit, twice-clarified ask, not a default worth assuming.
   """
 
   def __init__(self):
@@ -212,6 +217,13 @@ class Phase3OverrideLatch:
                                            # actually tripped it, added 2026-07-24 after
                                            # the first live drive left this undiagnosable
                                            # from the shadow log alone
+
+  def clear_on_reengage(self) -> None:
+    """Called once per planner cycle from longitudinal_planner.py on a real rising edge
+    of cruise-enabled (not every frame it's on) - the actual "set the cruise again"
+    moment. Safe to call even when nothing is tripped (no-op)."""
+    self.overridden = False
+    self.trip_reason = None
 
   def check(self, gas_pressed: bool, brake_pressed: bool, steering_pressed: bool) -> None:
     # No real-button-press check here (2026-07-24 postmortem): CS.buttonEvents, the
