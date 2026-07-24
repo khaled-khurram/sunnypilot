@@ -24,6 +24,9 @@ STEP_MPH = 1.0                        # confirmed real shallow-press effect (Q10
 FT_PER_MPH_SEC = 1.4667               # mph * (5280/3600) = ft/s per mph
 CURVE_EVENT_BUDGET = 10               # placeholder judgment call - not yet tuned against
                                        # real multi-curve drives, flagged in the report back
+ABSOLUTE_FLOOR_MPH = 25.0             # EyeSight's own ACC floor (research/phase3_controller_design.md
+                                       # §3 "hard safety bounds" - never command below this,
+                                       # independent of whatever MTSC's own curve target says
 
 # Shadow-mode-only: these paths are never read by carcontroller.py or any car-interface
 # code. This run cannot affect real CAN output even in principle.
@@ -212,23 +215,31 @@ class Phase3CurveController:
     if self.sim_target_mph is None:
       self.sim_target_mph = v_cruise_mph
 
-    # Rising edge of a new curve resets the per-curve-event budget (mirrors
-    # CurveAdvisoryHelper's own once-per-curve rising-edge pattern - not reinvented).
+    # Rising edge of a new curve resets the fire-down budget; falling edge (curve just
+    # cleared) resets a fresh budget for the restore-up phase. These must NOT share one
+    # pool - a big curve that spends most of its budget walking the target down would
+    # otherwise leave too little to walk back up, stranding the car below the driver's
+    # own set speed until the next curve happens to reset the counter. Restoring the
+    # driver's own previously-set speed is a materially safer direction to under-bound
+    # than leaving them stuck slower with no path back.
     if is_active and not self.was_active:
+      self.budget_remaining = CURVE_EVENT_BUDGET
+    elif not is_active and self.was_active:
       self.budget_remaining = CURVE_EVENT_BUDGET
 
     if is_active:
       dist_needed_ft = distance_needed_ft(v_current_mph, v_target_mph, self.decel_rate_mph_s)
       trigger_dist_ft = dist_needed_ft * DISTANCE_MARGIN
 
-      effective_target_mph = v_target_mph
+      effective_target_mph = max(v_target_mph, ABSOLUTE_FLOOR_MPH)
       downgraded = False
       if dist_needed_ft > 0 and dist_available_ft < trigger_dist_ft:
-        effective_target_mph = largest_reachable_target_mph(
-          v_current_mph, self.decel_rate_mph_s, dist_available_ft, DISTANCE_MARGIN)
+        effective_target_mph = max(
+          largest_reachable_target_mph(v_current_mph, self.decel_rate_mph_s, dist_available_ft, DISTANCE_MARGIN),
+          ABSOLUTE_FLOOR_MPH)
         downgraded = True
 
-      self.decision = self._step_toward(effective_target_mph, clamp_low=None, clamp_high=None)
+      self.decision = self._step_toward(effective_target_mph, clamp_low=ABSOLUTE_FLOOR_MPH, clamp_high=None)
       if downgraded and self.decision == "fire":
         self.decision = "downgrade"
       self._log(v_current_mph, effective_target_mph, dist_needed_ft, dist_available_ft)
