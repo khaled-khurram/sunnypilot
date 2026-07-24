@@ -4,15 +4,16 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-import json
 import math
-import time
 
 from cereal import custom
 from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.constants import CV
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
+from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import (
+  STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, Phase3OverrideLatch, log_shadow_decision,
+)
 
 MapState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
 
@@ -20,18 +21,26 @@ MapState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
 DEADBAND_MPH = 1.5
 DISTANCE_MARGIN = 1.25
 DECEL_RATE_SEED_MPH_S = 1.94          # user's own test: 60->25mph in 18s, flat road
-STEP_MPH = 1.0                        # confirmed real shallow-press effect (Q10)
 FT_PER_MPH_SEC = 1.4667               # mph * (5280/3600) = ft/s per mph
-CURVE_EVENT_BUDGET = 10               # placeholder judgment call - not yet tuned against
-                                       # real multi-curve drives, flagged in the report back
-ABSOLUTE_FLOOR_MPH = 25.0             # EyeSight's own ACC floor (research/phase3_controller_design.md
-                                       # §3 "hard safety bounds" - never command below this,
-                                       # independent of whatever MTSC's own curve target says
+CURVE_EVENT_BUDGET = 60               # placeholder judgment call, revised 2026-07-24: the
+                                       # original value of 10 was carried over from an
+                                       # earlier *whole-session* cap discussion without
+                                       # being reconsidered for what a single curve's own
+                                       # delta needs - verification testing found it
+                                       # couldn't even cover a 60->40mph curve target
+                                       # (needs 20 steps), let alone 80->50mph (30 steps).
+                                       # 60 comfortably covers the worst realistic single
+                                       # curve delta (80mph down to the 25mph floor = 55mph)
+                                       # while still being a finite defensive backstop, not
+                                       # an open-ended one. In practice MIN_COMMAND_INTERVAL_S
+                                       # below means this is rarely the binding constraint -
+                                       # a curve would need to stay "turning" for a full
+                                       # minute to ever exhaust it.
+# STEP_MPH, ABSOLUTE_FLOOR_MPH: shared across every Phase 3 feature, see phase3_shared.py
 
-# Shadow-mode-only: these paths are never read by carcontroller.py or any car-interface
-# code. This run cannot affect real CAN output even in principle.
+# Shadow-mode-only: never read by carcontroller.py or any car-interface code. This run
+# cannot affect real CAN output even in principle. (SHADOW_LOG_FILE lives in phase3_shared.py)
 DECEL_STATE_FILE = "/data/phase3_decel_rate_mph.txt"
-SHADOW_LOG_FILE = "/data/phase3_shadow_log.jsonl"
 
 MS_TO_MPH = CV.MS_TO_MPH
 
@@ -98,17 +107,17 @@ class Phase3CurveController:
   code reads. This run cannot affect real CAN output even in principle.
   """
 
-  def __init__(self):
+  def __init__(self, override_latch: Phase3OverrideLatch):
     self._params = Params()
+    self._override_latch = override_latch  # SHARED across every Phase 3 feature - see
+                                              # phase3_shared.py's Phase3OverrideLatch
+                                              # docstring for why this must not be private
     self.frame = -1
     self.armed = False
     self._read_params()
 
     self.was_active = False    # curve rising-edge tracking, mirrors CurveAdvisoryHelper
     self.was_gated_on = False  # arm+engaged rising-edge, for baseline snapshot
-    self.overridden = False    # session-long latch - once True, stays True until this
-                                # process restarts (a fresh onroad session/ignition
-                                # cycle), matching the "fresh explicit arm" requirement
 
     self.baseline_v_cruise_mph: float | None = None  # driver's own pre-Phase-3 set
                                                        # speed, snapshotted once per
@@ -116,6 +125,8 @@ class Phase3CurveController:
     self.sim_target_mph: float | None = None          # shadow-simulated commanded
                                                        # target - never actually sent
     self.budget_remaining = 0
+    self.t = 0.0
+    self.last_command_t = -1e9  # MIN_COMMAND_INTERVAL_S gate
     self.decel_rate_mph_s = _load_decel_rate()
 
     self.decision = "inert-not-armed"
@@ -137,22 +148,16 @@ class Phase3CurveController:
     if self.decision == self._last_logged_decision:
       return
     self._last_logged_decision = self.decision
-    entry = {
-      "t": time.time(),
-      "feature": "curve",
-      "v_current_mph": round(v_current_mph, 2),
-      "v_target_mph": round(v_target_mph, 2),
-      "dist_needed_ft": round(dist_needed_ft, 1),
-      "dist_available_ft": round(dist_available_ft, 1),
-      "decision": self.decision,
-      "budget_remaining": self.budget_remaining,
-      "sim_target_mph": round(self.sim_target_mph, 2) if self.sim_target_mph is not None else None,
-    }
-    try:
-      with open(SHADOW_LOG_FILE, "a") as f:
-        f.write(json.dumps(entry) + "\n")
-    except OSError:
-      pass  # logging must never raise into the control loop
+    log_shadow_decision(
+      "curve",
+      v_current_mph=round(v_current_mph, 2),
+      v_target_mph=round(v_target_mph, 2),
+      dist_needed_ft=round(dist_needed_ft, 1),
+      dist_available_ft=round(dist_available_ft, 1),
+      decision=self.decision,
+      budget_remaining=self.budget_remaining,
+      sim_target_mph=round(self.sim_target_mph, 2) if self.sim_target_mph is not None else None,
+    )
 
   def _step_toward(self, goal_mph: float, clamp_low: float | None, clamp_high: float | None) -> str:
     """Nudge sim_target_mph one shallow step toward goal_mph, respecting budget and
@@ -162,6 +167,8 @@ class Phase3CurveController:
       return "hold"
     if self.budget_remaining <= 0:
       return "hold"
+    if (self.t - self.last_command_t) < MIN_COMMAND_INTERVAL_S:
+      return "hold-rate-limited"
     step = STEP_MPH if goal_mph > self.sim_target_mph else -STEP_MPH
     new_target = self.sim_target_mph + step
     if clamp_low is not None:
@@ -170,6 +177,7 @@ class Phase3CurveController:
       new_target = min(new_target, clamp_high)
     self.sim_target_mph = new_target
     self.budget_remaining -= 1
+    self.last_command_t = self.t
     return "fire" if step < 0 else "restore"
 
   def update(self, map_state: int, distance_m: float, map_v_target: float,
@@ -177,6 +185,7 @@ class Phase3CurveController:
              gas_pressed: bool, brake_pressed: bool, steering_pressed: bool,
              cruise_button: int) -> None:
     self._read_params()
+    self.t += DT_MDL
 
     v_current_mph = v_ego * MS_TO_MPH
     v_cruise_mph = v_cruise * MS_TO_MPH
@@ -187,8 +196,10 @@ class Phase3CurveController:
     gated_on = self.armed and long_enabled
 
     # Override latch - checked before any policy decision, session-long once tripped.
-    if gated_on and (gas_pressed or brake_pressed or steering_pressed or cruise_button != 0):
-      self.overridden = True
+    # Shared instance: this also latches off any other Phase 3 feature using the same
+    # Phase3OverrideLatch, and vice versa.
+    if gated_on:
+      self._override_latch.check(gas_pressed, brake_pressed, steering_pressed, cruise_button)
 
     if not gated_on:
       self.decision = "inert-not-armed"
@@ -197,7 +208,7 @@ class Phase3CurveController:
       self.frame += 1
       return
 
-    if self.overridden:
+    if self._override_latch.overridden:
       self.decision = "latched-off"
       self._log(v_current_mph, v_target_mph, 0.0, dist_available_ft)
       self.was_active = is_active

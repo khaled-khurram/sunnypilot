@@ -10,7 +10,9 @@ from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot.selfdrive.controls.lib.curve_advisory_helper import CurveAdvisoryHelper
+from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import Phase3OverrideLatch
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_curve_controller import Phase3CurveController
+from openpilot.sunnypilot.selfdrive.controls.lib.phase3_lead_controller import Phase3LeadController
 from openpilot.sunnypilot.selfdrive.controls.lib.lead_closing_advisory_helper import LeadClosingAdvisoryHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.lead_closing_test_guidance_helper import LeadClosingTestGuidanceHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
@@ -32,7 +34,11 @@ class LongitudinalPlannerSP:
     self.dec = DynamicExperimentalController(CP, mpc)
     self.scc = SmartCruiseControl()
     self.curve_advisory = CurveAdvisoryHelper()
-    self.phase3_curve_controller = Phase3CurveController()  # shadow-mode only, see file docstring
+    # Shared across every Phase 3 actuation feature - one override event latches all of
+    # them off together (see phase3_shared.Phase3OverrideLatch docstring).
+    self.phase3_override_latch = Phase3OverrideLatch()
+    self.phase3_curve_controller = Phase3CurveController(self.phase3_override_latch)  # shadow-mode only
+    self.phase3_lead_controller = Phase3LeadController(self.phase3_override_latch)    # shadow-mode only
     self.lead_closing_advisory = LeadClosingAdvisoryHelper()
     self.lead_closing_test_guidance = LeadClosingTestGuidanceHelper()
     self.resolver = SpeedLimitResolver()
@@ -65,6 +71,8 @@ class LongitudinalPlannerSP:
     self.phase3_curve_controller.update(self.scc.map.state, self.scc.map.distance, self.scc.map.output_v_target,
                                          long_enabled, v_ego, v_cruise,
                                          CS.gasPressed, CS.brakePressed, CS.steeringPressed, CS.cruise_button)
+    self.phase3_lead_controller.update(sm['radarState'].leadOne, long_enabled, v_ego, v_cruise,
+                                        CS.gasPressed, CS.brakePressed, CS.steeringPressed, CS.cruise_button)
     self.lead_closing_advisory.update(sm['radarState'].leadOne, long_enabled, v_ego,
                                        CS.gasPressed, CS.brakePressed, self.events_sp)
     self.lead_closing_test_guidance.update(sm['radarState'].leadOne, long_enabled, v_ego, v_cruise_cluster,
