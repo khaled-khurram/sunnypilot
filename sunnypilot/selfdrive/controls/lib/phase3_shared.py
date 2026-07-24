@@ -35,9 +35,20 @@ ABSOLUTE_FLOOR_MPH = 25.0  # EyeSight's own ACC floor (research/phase3_controlle
 
 # research/phase3_controller_design.md §2, tightened for the first live test specifically
 # per explicit user request (2026-07-24) - "turned down further than defaults" language
-# from the design doc's own Stage 2 rollout section. Loosen back toward 1.0s once this
-# has held up over more than one session.
-MIN_COMMAND_INTERVAL_S = 2.0
+# from the design doc's own Stage 2 rollout section.
+#
+# Tightened again 2026-07-24, same night: quantified that at shallow-only 1mph/2.0s, the
+# TARGET itself descends at 0.5 mph/s - slower than EyeSight's own physical comfort-tuned
+# decel ceiling of ~1.94 mph/s (research/phase3_controller_design.md §7) - meaning button
+# cadence, not EyeSight's own braking, was the actual bottleneck on how fast the car could
+# respond to a closing situation. Archive-mined (research/button_cadence_response_curve.md,
+# 87 clean same-magnitude bursts, 200ms-several seconds, zero debounce collapse or
+# overshoot anywhere in that range) before changing this - not guessed. 0.4s chosen from
+# the well-supported 300-500ms range (not the single 200ms data point, which isn't a
+# margin, just one clean observation): 1mph/0.4s = 2.5 mph/s, comfortably above EyeSight's
+# own ceiling with real headroom, while sitting nowhere near the confirmed-bad ~50ms zone
+# or the untested 50-200ms gap between Q10's live test and this archive read.
+MIN_COMMAND_INTERVAL_S = 0.4
 
 # Added 2026-07-24, post-first-live-test finding: on the actual first drive, the override
 # latch tripped in the very first gated-on frame for both features, before either ever
