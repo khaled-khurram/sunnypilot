@@ -7,6 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 import cereal.messaging as messaging
 from cereal import log, car, custom
 from openpilot.common.constants import CV
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.sunnypilot.selfdrive.selfdrived.events_base import EventsBase, Priority, ET, Alert, \
   NoEntryAlert, ImmediateDisableAlert, EngagementAlert, NormalPermanentAlert, AlertCallbackType, wrong_car_mode_alert
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import PCM_LONG_REQUIRED_MAX_SET_SPEED, CONFIRM_SPEED_THRESHOLD
@@ -72,6 +73,18 @@ def speed_limit_pre_active_alert(CP: car.CarParams, CS: car.CarState, sm: messag
     Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleLow, .1)
 
 
+def _phase3_curve_armed() -> bool:
+  # Shadow-mode/actuation wording switch - see research/phase3_controller_design.md §7
+  # ("Alert during auto-actuation" row). Reads Params directly (unlike sibling alert
+  # functions in this file, which only read sm) since Phase3Armed isn't published into
+  # any capnp message - adding one would need a schema change/rebuild, not available on
+  # this prebuilt branch (no SConstruct). A plain Params() read has no such constraint.
+  try:
+    return Params().get_bool("Phase3Armed")
+  except UnknownKeyName:
+    return False  # same compiled-allowlist landmine as CurveSpeedAdvisory; defaults off
+
+
 def curve_speed_advisory_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   scc_map = sm['longitudinalPlanSP'].smartCruiseControl.map
   speed = round(scc_map.vTarget * (CV.MS_TO_KPH if metric else CV.MS_TO_MPH))
@@ -81,6 +94,16 @@ def curve_speed_advisory_alert(CP: car.CarParams, CS: car.CarState, sm: messagin
     dist_str = f"{round(scc_map.distance)} m"
   else:
     dist_str = f"{round(scc_map.distance * 3.28084)} ft"
+
+  if _phase3_curve_armed():
+    # Informational, not advisory - the driver doesn't need to act, Phase 3 is already
+    # walking the target down on its own. Still shown (not suppressed) for situational
+    # awareness - silently changing speed with zero indicator would erode trust.
+    return Alert(
+      "Curve Ahead",
+      f"auto-adjusting to {speed} {speed_unit} in {dist_str}",
+      AlertStatus.normal, AlertSize.mid,
+      Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 4.)
 
   return Alert(
     "Curve Ahead",
