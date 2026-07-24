@@ -245,7 +245,17 @@ class Phase3SlfController:
       else:
         self.segment_pending_limit_mph = None  # reading matches current segment, nothing pending
 
-    if self.slf_target_mph is not None and not self.segment_pinned:
+    # Yield entirely to a higher-priority in-flight episode (2026-07-24 fix): curve/lead
+    # each maintain their own sim_target independent of SLF's, and the arbiter only ever
+    # blocked same-cycle collisions - it never stopped SLF and lead/curve alternating
+    # writes in adjacent cycles, each chasing a different goal on the same physical
+    # Cruise_Set_Speed. Real telemetry showed this exact oscillation (74->78 restore vs.
+    # 73->70 descent, same few seconds, 2026-07-24 20:10:12-16). Skipping SLF's own step
+    # completely while curve or lead has something active - not just losing ties - closes
+    # that gap; SLF resumes on its own goal the moment both go dormant again.
+    if curve_active or lead_active:
+      self.decision = "hold-yielding"
+    elif self.slf_target_mph is not None and not self.segment_pinned:
       self.decision = self._step_toward(self.slf_target_mph)
     else:
       self.decision = "hold"

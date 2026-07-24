@@ -39,8 +39,15 @@ SLF_ARM_FILE = "/data/phase3_slf_armed"  # speed-limit-following, added 2026-07-
 SLF_BUFFER_MPH = 5.0
 SEGMENT_DEBOUNCE_S = 2.5  # guessed, not measured - see the design doc's own §7/§10 flag
 DELTA_NOISE_FLOOR_MPH = 0.4  # below this, a v_cruise frame-to-frame change isn't real
-SELF_ATTRIBUTION_WINDOW_S = 0.3  # covers Q6's ~100ms observed command-to-effect delay
-                                   # plus margin for the telemetry itself to propagate
+SELF_ATTRIBUTION_WINDOW_S = 0.7  # was 0.3 (Q6's single-press ~100ms round-trip) - too
+                                   # tight for a rapid multi-step burst's settling tail.
+                                   # Real telemetry (2026-07-24 drive) caught 2 false
+                                   # "button pressed" trips at 0.40-0.45s after the last
+                                   # burst write, both misattributed as external and
+                                   # session-killing all three features. Widened to
+                                   # MIN_COMMAND_INTERVAL_S (0.4s) + ~0.3s margin so a
+                                   # burst's last step's real CAN-level settling has room
+                                   # to land before being read as unexplained.
 
 STEP_MPH = 1.0             # confirmed real shallow-press effect (Q10)
 ABSOLUTE_FLOOR_MPH = 25.0  # EyeSight's own ACC floor (research/phase3_controller_design.md
