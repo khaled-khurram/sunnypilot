@@ -21,6 +21,15 @@ import time as _time
 _PHASE3_COMMAND_FILE = "/data/phase3_button_command"
 _PHASE3_STALENESS_S = 0.3
 
+# Observability-only (2026-07-24): EyeSight's own real, unmodified Car_Follow/
+# Close_Distance from the incoming ES_Distance message - the same message this file
+# already re-transmits every 5 frames with only the button field overridden. Written
+# here (not read here) so phase3_shared.py's shadow log can record whether EyeSight
+# already had its own lead lock at the moment any Phase 3 feature acted - answers "did
+# Phase 3 duplicate a job EyeSight was already doing" with real data instead of a guess.
+# No gating/behavior effect - nothing in this file reads this back.
+_PHASE3_EYESIGHT_STATE_FILE = "/data/phase3_eyesight_state.txt"
+
 
 def _phase3_read_command_if_safe(gas_pressed: bool, brake_pressed: bool, steering_pressed: bool,
                                   real_button_pressed: bool) -> int | None:
@@ -131,6 +140,13 @@ class CarController(CarControllerBase, SnGCarController):
         self.cruise_button_prev = cruise_button
 
         can_sends.append(subarucan.create_preglobal_es_distance(self.packer, cruise_button, CS.es_distance_msg))
+
+        try:
+          with open(_PHASE3_EYESIGHT_STATE_FILE, "w") as f:
+            f.write(f"{int(CS.es_distance_msg.get('Car_Follow', 0))} "
+                    f"{CS.es_distance_msg.get('Close_Distance', 0.0)} {_time.time()}\n")
+        except OSError:
+          pass
 
     else:
       if self.frame % 10 == 0:
