@@ -129,8 +129,18 @@ class Phase3OverrideLatch:
   def __init__(self):
     self.overridden = False
 
-  def check(self, gas_pressed: bool, brake_pressed: bool, steering_pressed: bool, cruise_button: int) -> None:
-    if gas_pressed or brake_pressed or steering_pressed or cruise_button != 0:
+  def check(self, gas_pressed: bool, brake_pressed: bool, steering_pressed: bool) -> None:
+    # No real-button-press check here (2026-07-24 postmortem): CS.buttonEvents, the
+    # schema-correct signal, is never populated at all for this preglobal car (same gap
+    # tonight's earlier MADS investigation already found). The raw cruise_button value
+    # only exists inside carcontroller.py's own scope, on a different object than the
+    # capnp-published CarState plannerd reads here - crashed plannerd outright when this
+    # tried to read it (AttributeError: struct has no such member). NOT a safety gap:
+    # carcontroller.py's own independent, unconditional final gate (phase3_shared
+    # constants duplicated there, see that file's own _phase3_read_command_if_safe)
+    # already re-checks the real button-press condition correctly every cycle from the
+    # object that actually has it - this latch not seeing it doesn't weaken that.
+    if gas_pressed or brake_pressed or steering_pressed:
       self.overridden = True
 
 

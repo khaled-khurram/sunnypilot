@@ -74,11 +74,16 @@ class LongitudinalPlannerSP:
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
     self.curve_advisory.update(self.scc.map.state, long_enabled, v_ego, self.events_sp)
     self.phase3_command_arbiter.new_cycle()  # reset the one-write-per-cycle gate before either controller runs
+    # NOTE: CS.cruise_button is deliberately NOT passed here (2026-07-24 postmortem,
+    # crashed plannerd outright: "struct has no such member; name = cruise_button" -
+    # that field only exists on opendbc's raw CarState object inside carcontroller.py,
+    # a different object than this capnp-published sm['carState']/CS). Not a safety
+    # gap - see Phase3OverrideLatch.check()'s own docstring for why.
     self.phase3_curve_controller.update(self.scc.map.state, self.scc.map.distance, self.scc.map.output_v_target,
                                          long_enabled, v_ego, v_cruise,
-                                         CS.gasPressed, CS.brakePressed, CS.steeringPressed, CS.cruise_button)
+                                         CS.gasPressed, CS.brakePressed, CS.steeringPressed)
     self.phase3_lead_controller.update(sm['radarState'].leadOne, long_enabled, v_ego, v_cruise,
-                                        CS.gasPressed, CS.brakePressed, CS.steeringPressed, CS.cruise_button)
+                                        CS.gasPressed, CS.brakePressed, CS.steeringPressed)
     self.lead_closing_advisory.update(sm['radarState'].leadOne, long_enabled, v_ego,
                                        CS.gasPressed, CS.brakePressed, self.events_sp)
     self.lead_closing_test_guidance.update(sm['radarState'].leadOne, long_enabled, v_ego, v_cruise_cluster,

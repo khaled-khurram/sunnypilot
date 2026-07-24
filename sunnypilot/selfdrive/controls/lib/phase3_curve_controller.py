@@ -186,8 +186,7 @@ class Phase3CurveController:
 
   def update(self, map_state: int, distance_m: float, map_v_target: float,
              long_enabled: bool, v_ego: float, v_cruise: float,
-             gas_pressed: bool, brake_pressed: bool, steering_pressed: bool,
-             cruise_button: int) -> None:
+             gas_pressed: bool, brake_pressed: bool, steering_pressed: bool) -> None:
     self._read_arm_state()
     self.t += DT_MDL
 
@@ -203,7 +202,7 @@ class Phase3CurveController:
     # Shared instance: this also latches off any other Phase 3 feature using the same
     # Phase3OverrideLatch, and vice versa.
     if gated_on:
-      self._override_latch.check(gas_pressed, brake_pressed, steering_pressed, cruise_button)
+      self._override_latch.check(gas_pressed, brake_pressed, steering_pressed)
 
     if not gated_on:
       self.decision = "inert-not-armed"

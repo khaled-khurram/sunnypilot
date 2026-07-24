@@ -153,8 +153,7 @@ class Phase3LeadController:
     return "fire" if step < 0 else "restore"
 
   def update(self, lead, long_enabled: bool, v_ego: float, v_cruise: float,
-             gas_pressed: bool, brake_pressed: bool, steering_pressed: bool,
-             cruise_button: int) -> None:
+             gas_pressed: bool, brake_pressed: bool, steering_pressed: bool) -> None:
     # `lead` is a radarState.leadOne capnp reader (cereal/log.capnp LeadData), same as
     # lead_closing_advisory_helper.py - not opendbc's CarState/CarParams structs.
     self._read_arm_state()
@@ -171,7 +170,7 @@ class Phase3LeadController:
     # Override latch - shared instance: this also latches off curve actuation, and vice
     # versa, matching "tap brakes once, everything goes dark."
     if gated_on:
-      self._override_latch.check(gas_pressed, brake_pressed, steering_pressed, cruise_button)
+      self._override_latch.check(gas_pressed, brake_pressed, steering_pressed)
 
     if not gated_on:
       self.decision = "inert-not-armed"
