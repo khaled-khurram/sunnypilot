@@ -41,13 +41,13 @@ LEAD_ARM_FILE = "/data/phase3_lead_armed"
 SLF_ARM_FILE = "/data/phase3_slf_armed"  # speed-limit-following, added 2026-07-24 -
                                            # same isolated-rollout-risk pattern as lead
 
-# Speed-limit-following constants (2026-07-24). Not a runtime-tunable Params() value
-# despite research/phase3_speed_limit_following_design.md §1 suggesting one - that
-# would hit the exact same compiled-Params-allowlist landmine every other new Phase3
-# param already has on this prebuilt branch (see CURVE_ARM_FILE/LEAD_ARM_FILE comments
-# above for why those became flag-files instead). A real runtime-tunable buffer would
-# need the same flag-file-style mechanism if wanted later - not blocking for v1.
-SLF_BUFFER_MPH = 5.0
+# Speed-limit-following constants (2026-07-24). The buffer itself (formerly a hardcoded
+# SLF_BUFFER_MPH=5.0 here, hitting the same compiled-Params-allowlist landmine every other
+# new Phase3 param has on this prebuilt branch) was removed 2026-07-25 in favor of
+# reusing sunnypilot's own native, already-on-screen, already-compiled "Speed Limit"
+# settings page (Offset Type/Value) - see longitudinal_planner.py, which now feeds this
+# controller speed_limit_final instead of the raw posted limit. No allowlist workaround
+# needed since those Params keys are already native/known.
 SEGMENT_DEBOUNCE_S = 2.5  # guessed, not measured - see the design doc's own §7/§10 flag
 DELTA_NOISE_FLOOR_MPH = 0.4  # below this, a v_cruise frame-to-frame change isn't real
 SELF_ATTRIBUTION_WINDOW_S = 0.7  # was 0.3 (Q6's single-press ~100ms round-trip) - too

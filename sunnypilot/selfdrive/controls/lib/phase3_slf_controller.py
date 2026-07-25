@@ -8,7 +8,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.common.constants import CV
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import (
   STEP_MPH, ABSOLUTE_FLOOR_MPH, MIN_COMMAND_INTERVAL_S, GRACE_PERIOD_S, SETTLE_TIME_S,
-  SLF_ARM_FILE, SLF_BUFFER_MPH, SEGMENT_DEBOUNCE_S, DELTA_NOISE_FLOOR_MPH,
+  SLF_ARM_FILE, SEGMENT_DEBOUNCE_S, DELTA_NOISE_FLOOR_MPH,
   SELF_ATTRIBUTION_WINDOW_S, BUTTON_SET_SHALLOW, BUTTON_RESUME_SHALLOW,
   Phase3OverrideLatch, Phase3CommandArbiter, is_armed, log_shadow_decision,
 )
@@ -21,8 +21,12 @@ class Phase3SlfController:
   Shadow/live Phase 3 speed-limit-following (research/phase3_speed_limit_following_design.md).
   Third Phase 3 actuation feature, alongside curve and lead. Follows posted speed limits
   in BOTH directions as of the §2 v1.1 update (2026-07-24) - walks the target toward a
-  newly-detected, debounced posted limit + SLF_BUFFER_MPH, using the same shallow-SET/
-  RESUME/shared-arbiter primitive as curve/lead.
+  newly-detected, debounced posted limit, using the same shallow-SET/RESUME/shared-
+  arbiter primitive as curve/lead. The buffer is no longer this file's own concern
+  (2026-07-25) - longitudinal_planner.py now feeds this controller sunnypilot's native
+  speed_limit_final (posted limit + the driver's own on-screen Offset Type/Value
+  setting), so the "posted limit" this controller sees already has the driver's chosen
+  buffer baked in.
 
   Auto-raise ceiling, the actual point of the v1.1 design: `target = min(baseline, new
   limit + buffer)` - never exceeds the driver's own real set speed (`baseline_v_cruise_mph`,
@@ -232,7 +236,11 @@ class Phase3SlfController:
           self.current_segment_limit_mph = self.segment_pending_limit_mph
           self.segment_pending_limit_mph = None
           self.segment_pinned = False
-          candidate = self.current_segment_limit_mph + SLF_BUFFER_MPH
+          # No buffer added here (2026-07-25, was SLF_BUFFER_MPH=5.0 hardcoded) - the
+          # incoming speed_limit_mph is now longitudinal_planner.py's speed_limit_final,
+          # which already includes sunnypilot's own native, on-screen Offset Type/Value
+          # setting. Adding a second buffer here would double it.
+          candidate = self.current_segment_limit_mph
           ceiling = self.baseline_v_cruise_mph if self.baseline_v_cruise_mph is not None else candidate
           # min(candidate, ceiling) already handles both directions in one formula: if
           # this zone's own limit+buffer is genuinely lower than the ceiling, that's the

@@ -118,7 +118,12 @@ class LongitudinalPlannerSP:
     # computation. Called after curve/lead so it naturally loses arbiter ties to both
     # (§6 priority: curve > lead > slf) and so its context-gated button routing reads
     # curve/lead's current-frame was_active/in_episode.
-    slf_limit_mph = self.resolver.speed_limit * CV.MS_TO_MPH if self.resolver.speed_limit_valid else None
+    # speed_limit_final (not raw speed_limit) so SLF's buffer comes from the native, already
+    # on-screen "Speed Limit" settings page (Offset Type/Value) instead of a hardcoded
+    # constant (2026-07-25) - resolver computes speed_limit_final = speed_limit +
+    # speed_limit_offset unconditionally every cycle, so this is safe to read whenever
+    # speed_limit_valid is true, same gating as before.
+    slf_limit_mph = self.resolver.speed_limit_final * CV.MS_TO_MPH if self.resolver.speed_limit_valid else None
     self.phase3_slf_controller.update(slf_limit_mph, long_enabled, v_ego, v_cruise,
                                        CS.gasPressed, CS.brakePressed, CS.steeringPressed,
                                        self.phase3_curve_controller.was_active, self.phase3_lead_controller.in_episode)
