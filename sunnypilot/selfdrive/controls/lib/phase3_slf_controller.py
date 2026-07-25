@@ -32,22 +32,23 @@ class Phase3SlfController:
   cannot happen, because the ceiling is always something the driver actually dialed in
   themselves, never a number this controller invented.
 
-  Owns the new context-gated button-press routing (§3/§6): since none of the three
-  controllers can see a real button press directly (CS.buttonEvents is never populated
-  on this preglobal car - same gap the Q11/dba5d57 crash postmortem found), "a button was
-  pressed" is inferred from an unexplained v_cruise delta, cross-checked against the
-  shared Phase3CommandArbiter's own last_write_t (which controller wrote last, and when -
-  known with certainty, not inferred from magnitude/direction, which is what made the
-  design doc's original proposal wrong: curve's own restore phase legitimately writes
-  upward/RESUME commands too, so "upward = external" was never a safe assumption - and
-  now SLF itself can also legitimately write upward commands, making that assumption
-  even less safe than it already was).
+  Owns external button-press detection (§3/§6): since none of the three controllers can
+  see a real button press directly (CS.buttonEvents is never populated on this preglobal
+  car - same gap the Q11/dba5d57 crash postmortem found), "a button was pressed" is
+  inferred from an unexplained v_cruise delta, cross-checked against the shared
+  Phase3CommandArbiter's own last_write_t (which controller wrote last, and when - known
+  with certainty, not inferred from magnitude/direction, which is what made the design
+  doc's original proposal wrong: curve's own restore phase legitimately writes upward/
+  RESUME commands too, so "upward = external" was never a safe assumption).
 
-  Safety choice made during implementation, not in the original design doc: this new
-  routing only changes behavior once Phase3SlfArmed is actually true. If SLF is unarmed,
-  a detected button press always falls through to the existing unconditional
-  Phase3OverrideLatch.check()-equivalent kill - curve/lead's already-tested override
-  behavior is byte-for-byte unchanged until this feature is deliberately turned on.
+  As of 2026-07-25 this only ever pins SLF at the driver's corrected speed - it used to
+  also kill curve+lead+SLF together whenever either had something in flight, but real
+  road-trip telemetry showed that was the dominant cause of the system going dark (54% of
+  all override trips over one ~6hr drive) and it kept misfiring even after tightening the
+  attribution window, since this is always an inference, never a certainty. Only a real
+  pedal press (brake/gas/steering) still latches everything off now. This detection only
+  runs at all once Phase3SlfArmed is true; unarmed, SLF is fully inert and curve/lead's
+  own independent pedal-only override.check() calls are unaffected either way.
   """
 
   def __init__(self, override_latch: Phase3OverrideLatch, command_arbiter: Phase3CommandArbiter):
@@ -179,36 +180,33 @@ class Phase3SlfController:
       self.sim_target_mph = v_cruise_mph
       self.baseline_v_cruise_mph = v_cruise_mph
 
-    # --- External button-press detection + context-gated routing (§3/§4/§6) ---
+    # --- External button-press detection -> pin, never kill (2026-07-25) ---
+    # Used to branch on curve_active/lead_active and call self._override_latch.trip_button()
+    # to kill all three features when either had something in flight - removed after a real
+    # ~6hr road-trip drive showed this was the dominant cause of the system going dark (54%
+    # of all override trips) and was STILL misfiring even after tightening the attribution
+    # window, because CS.buttonEvents is never populated on this car: "a button was pressed"
+    # is always an inference here, never a certainty, and three live features shouldn't die
+    # on an unreliable inference. Now unconditional: any detected external press pins SLF at
+    # the driver's corrected speed (updating baseline too, same as the old dormant-only
+    # path) regardless of what curve/lead are doing - the correction still registers, curve/
+    # lead simply keep pursuing their own goals uninterrupted. Only a real pedal press
+    # (brake/gas/steering, via override_latch.check()) still latches everything off.
     if self.last_v_cruise_mph is not None:
       delta = v_cruise_mph - self.last_v_cruise_mph
       if abs(delta) >= DELTA_NOISE_FLOOR_MPH:
         self_caused = (self.t - self._arbiter.last_write_t) < SELF_ATTRIBUTION_WINDOW_S
         if not self_caused:
-          if curve_active or lead_active:
-            # A transient curve/lead event is actually in flight right now - this press
-            # is treated exactly as today's unconditional behavior: full, session-long
-            # kill of curve+lead+SLF together. Only reachable at all when SLF is armed;
-            # when unarmed, gated_on is False above and this whole block never runs, so
-            # curve/lead's own pedal-only override.check() calls are the only path -
-            # unchanged, exactly as before this feature existed.
-            self._override_latch.trip_button()
-          else:
-            # Both dormant - this can't be "about" an active curve/lead event, because
-            # neither has one running. Pin it: hold here for the rest of this segment,
-            # don't fight the driver's correction, and don't touch the shared latch. Also
-            # update baseline - a real, deliberate manual correction IS the driver
-            # choosing a new real cruising speed, so it becomes the new ceiling
-            # auto-raise respects going forward, not just a one-segment exception.
-            self.segment_pinned = True
-            self.slf_target_mph = v_cruise_mph
-            self.sim_target_mph = v_cruise_mph
-            self.baseline_v_cruise_mph = v_cruise_mph
+          self.segment_pinned = True
+          self.slf_target_mph = v_cruise_mph
+          self.sim_target_mph = v_cruise_mph
+          self.baseline_v_cruise_mph = v_cruise_mph
     self.last_v_cruise_mph = v_cruise_mph
 
     if self._override_latch.overridden:
-      # trip_button() above may have just fired this frame - re-check before proceeding,
-      # same discipline as the early-return above, not a redundant no-op.
+      # Nothing between here and the earlier check() call can trip this anymore (button
+      # detection above only pins now, never trips the latch) - kept as a cheap defensive
+      # re-check rather than assumed safe to remove.
       self.decision = "latched-off"
       self._log(v_current_mph, v_cruise_mph)
       self.was_gated_on = gated_on

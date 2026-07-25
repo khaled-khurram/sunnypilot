@@ -233,9 +233,9 @@ class Phase3OverrideLatch:
   """
   Shared, session-long driver-override latch for ALL Phase 3 actuation features.
   User's own words (2026-07-24): "if I just tap brakes once, everything goes dark" - a
-  single override event (brake/steering/gas/real-button-press) must latch off every
-  Phase 3 feature together, not just whichever one happened to be acting at that moment.
-  Every controller must hold a reference to the SAME instance, not its own private copy.
+  single override event (brake/steering/gas) must latch off every Phase 3 feature
+  together, not just whichever one happened to be acting at that moment. Every
+  controller must hold a reference to the SAME instance, not its own private copy.
   Re-arms on a fresh cruise engagement (2026-07-24, corrected same night after the user
   clarified this in plain terms: "if I tap those override latches everything goes dark
   UNTIL I actually set the cruise again then it all comes back" - NOT "off for the rest
@@ -244,6 +244,17 @@ class Phase3OverrideLatch:
   sticky than a whole-drive lockout - a quick disengage/re-engage brings Phase 3 straight
   back regardless of whether whatever caused the override is still true. Built this way
   anyway because that's the explicit, twice-clarified ask, not a default worth assuming.
+
+  Pedal-only as of 2026-07-25: an inferred external button press (`trip_button()`, now
+  removed) used to latch everything off too when curve/lead had something in flight -
+  real road-trip telemetry showed this was the dominant cause of the system going dark
+  (54% of all trips over a ~6hr drive) and was still misfiring even after tightening its
+  attribution window, because CS.buttonEvents is never populated on this car - "a button
+  was pressed" was always an inference, never a certainty, and killing three live
+  features on that inference cost more than it protected. A detected button press now
+  routes to SLF's pin-and-hold behavior unconditionally instead (see
+  phase3_slf_controller.py) - the correction still registers, but pedal input remains
+  the only thing that latches everything off.
   """
 
   def __init__(self):
@@ -278,22 +289,6 @@ class Phase3OverrideLatch:
     if reasons:
       self.overridden = True
       self.trip_reason = "+".join(reasons)
-
-  def trip_button(self) -> None:
-    """Distinct from check() - added 2026-07-24 for SLF's context-gated button routing
-    (research/phase3_speed_limit_following_design.md §3/§6). Called only when a real
-    button press was detected (inferred, see phase3_slf_controller.py) AND curve or lead
-    had an active transient event underway at that moment - the exact same "something's
-    wrong, stop everything" outcome as today's unconditional button-kill, just reached via
-    inference instead of a direct cruise_button read (which crashed plannerd once already
-    tonight - see check()'s own comment). A button press while SLF is unarmed, or while
-    curve/lead are both dormant, never calls this - see phase3_slf_controller.py for the
-    routing decision itself, this method only records the outcome once made."""
-    if self.overridden:
-      return
-    self.overridden = True
-    self.trip_reason = "button-while-active"
-
 
 def log_shadow_decision(feature: str, **fields) -> None:
   """Append one JSONL entry to the shared shadow log. Never raises into the control
