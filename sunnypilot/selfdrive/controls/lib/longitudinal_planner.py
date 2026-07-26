@@ -132,12 +132,15 @@ class LongitudinalPlannerSP:
     # UI status dots + one-shot alert transport (2026-07-26) - throttled plain-file
     # write, read independently by the UI process and by selfdrived's alert-text lookup.
     # See phase3_shared.write_ui_status()'s own docstring for why this isn't Params/capnp.
+    # "armed" here means gated_on (armed flag file AND cruise actually engaged), not just
+    # the raw flag file - a dot has no business showing on/idle/active if cruise isn't
+    # even engaged, regardless of whether the feature is armed for whenever it does.
     self._phase3_ui_status_frame += 1
     if self._phase3_ui_status_frame % UI_STATUS_WRITE_INTERVAL_FRAMES == 0:
       write_ui_status(
-        self.phase3_curve_controller.armed, self.phase3_curve_controller.is_active,
-        self.phase3_lead_controller.armed, self.phase3_lead_controller.in_episode,
-        self.phase3_slf_controller.armed, self.phase3_slf_controller.is_active,
+        self.phase3_curve_controller.armed and long_enabled, self.phase3_curve_controller.is_active,
+        self.phase3_lead_controller.armed and long_enabled, self.phase3_lead_controller.in_episode,
+        self.phase3_slf_controller.armed and long_enabled, self.phase3_slf_controller.is_active,
         self.phase3_override_latch.overridden, self.phase3_override_latch.trip_reason,
         self.phase3_override_latch.trip_seq,
       )

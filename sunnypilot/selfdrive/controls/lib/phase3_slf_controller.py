@@ -60,6 +60,9 @@ class Phase3SlfController:
     self._arbiter = command_arbiter
     self.frame = -1
     self.armed = False
+    self.is_active = False  # UI status dot export - must exist before the first update()
+                              # call, since the override-latch early return below can
+                              # skip past the line that normally sets this real value
     self._read_arm_state()
 
     self.was_gated_on = False
