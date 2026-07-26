@@ -72,9 +72,9 @@ class DotsRenderer(Widget):
       return
 
     states = [
-      self._dot_state(self._status.get("curve", {})),
-      self._dot_state(self._status.get("lead", {})),
-      self._dot_state(self._status.get("slf", {})),
+      self._dot_state(self._status["curve"]),
+      self._dot_state(self._status["lead"]),
+      self._dot_state(self._status["slf"]),
     ]
     on_indices = [i for i, s in enumerate(states) if s != "off"]
     if not on_indices:
@@ -94,6 +94,6 @@ class DotsRenderer(Widget):
 
   @staticmethod
   def _dot_state(feature: dict) -> str:
-    if not feature.get("armed"):
+    if not feature["armed"]:
       return "off"
-    return "active" if feature.get("active") else "idle"
+    return "active" if feature["active"] else "idle"

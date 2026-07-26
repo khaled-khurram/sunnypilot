@@ -115,9 +115,6 @@ class Phase3CurveController:
                                        # command can be written per planner cycle
     self.frame = -1
     self.armed = False
-    self.is_active = False  # UI status dot export - defensive default, matching the
-                              # armed/was_active pattern above, in case update() is ever
-                              # read before it's run once
     self._read_arm_state()
 
     self.was_active = False    # curve rising-edge tracking, mirrors CurveAdvisoryHelper
