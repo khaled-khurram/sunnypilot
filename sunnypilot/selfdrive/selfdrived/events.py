@@ -11,7 +11,6 @@ from openpilot.common.params import Params, UnknownKeyName
 from openpilot.sunnypilot.selfdrive.selfdrived.events_base import EventsBase, Priority, ET, Alert, \
   NoEntryAlert, ImmediateDisableAlert, EngagementAlert, NormalPermanentAlert, AlertCallbackType, wrong_car_mode_alert
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import PCM_LONG_REQUIRED_MAX_SET_SPEED, CONFIRM_SPEED_THRESHOLD
-from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import read_ui_status
 from openpilot.system.hardware import HARDWARE
 
 AlertSize = log.SelfdriveState.AlertSize
@@ -121,32 +120,18 @@ def lead_closing_advisory_alert(CP: car.CarParams, CS: car.CarState, sm: messagi
     Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 4.)
 
 
-# Repurposed 2026-07-26 (see lead_closing_test_guidance_helper.py's own docstring):
-# reused EventNameSP.leadClosingTestGuidance slot, now the Phase 3 override-trip
-# one-shot alert instead of the original closing-lead validation-tool prompt. Reads
-# /data/phase3_ui_status.json directly rather than a capnp field - trip_reason is a
-# string with no home in any existing schema, and adding one needs capnp codegen this
-# build can't do (same landmine _phase3_curve_armed()'s docstring above describes).
-_TRIP_REASON_TEXT = {
-  "gas": "gas pedal",
-  "brake": "brake pedal",
-  "steering": "steering wheel",
-  "gas+brake": "gas + brake",
-  "gas+steering": "gas + steering",
-  "brake+steering": "brake + steering",
-  "gas+brake+steering": "gas + brake + steering",
-}
-
-
 def lead_closing_test_guidance_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
-  status = read_ui_status()
-  reason = _TRIP_REASON_TEXT.get(status.get("trip_reason") if status else None, "override detected")
+  # Validation-tool alert, not part of the shipped advisory - see
+  # lead_closing_test_guidance_helper.py. Opt-in only, off by default.
+  v_target = sm['longitudinalPlanSP'].leadClosingTest.vTarget
+  speed = round(v_target * (CV.MS_TO_KPH if metric else CV.MS_TO_MPH))
+  speed_unit = "km/h" if metric else "mph"
 
   return Alert(
-    "Phase 3 Off",
-    reason,
+    "Ease Off",
+    f"press SET — target ~{speed} {speed_unit}",
     AlertStatus.normal, AlertSize.mid,
-    Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 4.)
+    Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 3.)
 
 
 class EventsSP(EventsBase):

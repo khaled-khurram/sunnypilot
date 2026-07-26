@@ -6,42 +6,86 @@ See the LICENSE.md file in the root directory for more details.
 """
 from cereal import custom
 
-from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import Phase3OverrideLatch
+from openpilot.common.params import Params, UnknownKeyName
+from openpilot.common.realtime import DT_MDL
+from openpilot.common.constants import CV
+from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 EventNameSP = custom.OnroadEventSP.EventName
 
-# Repurposed 2026-07-26: this was a standalone closing-lead validation-tool prompt,
-# opt-in via Params().get_bool("LeadClosingTestGuidance"). That Params key was never
-# added to the compiled allowlist on this prebuilt branch (confirmed absent from
-# common/params_keys.h, same landmine as CURVE_ARM_FILE's docstring describes for
-# Phase3Armed/CurveSpeedAdvisory) - self.enabled always silently resolved to False, so
-# this helper's original trigger has never actually fired on this build. Nothing live
-# is being removed by repurposing it.
+# NOT part of the shipped LeadClosingAdvisory feature (that stays a one-time
+# nudge, unchanged). This is a standalone validation tool: before spending
+# money/effort on a physical button-press microcontroller (Phase 3 hardware),
+# repeatedly surface exactly what an automated system would want done -
+# "ease off, target ~X mph" - so the driver can execute it manually with the
+# real buttons and judge, in real driving, whether the underlying decision
+# logic actually produces good outcomes (smooth convergence, EyeSight
+# actually locking on) before ever building an actuator to do it for real.
 #
-# New job: fire the Phase 3 override-trip one-shot alert (see
-# phase3_shared.Phase3OverrideLatch's own docstring - "if I just tap brakes once,
-# everything goes dark," with no on-screen feedback of any kind until this). Reuses
-# this EventNameSP.leadClosingTestGuidance slot specifically because it's the one
-# already-compiled, already-unused enum member available - a brand-new EventNameSP
-# member needs capnp codegen, which needs a build system (SConstruct) that doesn't
-# exist anywhere in this tree.
+# Off by default - opt in per drive via:
+#   Params().put_bool("LeadClosingTestGuidance", True)
+
+MIN_ADVISORY_SPEED = 50 * CV.MPH_TO_MS
+CLOSING_VREL_THRESHOLD = -3.0    # m/s, same detection threshold as the shipped advisory
+SUSTAIN_TIME = 0.5               # seconds
+NO_RECENT_PEDAL_TIME = 3.0       # seconds
+TARGET_MARGIN = 4 * CV.MPH_TO_MS  # buffer above the lead's estimated speed - not asking
+                                   # to match it exactly, just enough for EyeSight to get a lock
+CONVERGED_TOLERANCE = 2 * CV.MPH_TO_MS  # stop prompting once set-speed is this close to target
+REPEAT_INTERVAL = 5.0             # seconds between repeated prompts while still above target -
+                                   # short enough to be useful in real time, long enough to see
+                                   # the effect of the last press before the next prompt
 
 
 class LeadClosingTestGuidanceHelper:
   def __init__(self):
-    self._last_seen_trip_seq = 0
-    # Inert - kept only so longitudinal_planner.py's publish_longitudinal_plan_sp()
-    # doesn't need to change; these fields' original closing-speed meaning no longer
-    # applies and nothing reads them for real anymore.
+    self._params = Params()
+    self.frame = -1
+    try:
+      self.enabled = self._params.get_bool("LeadClosingTestGuidance")
+    except UnknownKeyName:
+      self.enabled = False  # opt-in test tool, unlike the shipped advisory
+    self.closing_since: float | None = None
+    self.last_pedal_t = -1e9
+    self.last_fire_t = -1e9
+    self.t = 0.0
     self.v_target = 0.0
     self.active = False
 
-  def update(self, override_latch: Phase3OverrideLatch, events_sp: EventsSP) -> None:
-    """Fires once per NEW override-latch trip (trip_seq edge), not every cycle the
-    latch stays tripped - see Phase3OverrideLatch.trip_seq's own docstring. A fresh
-    trip can only happen after clear_on_reengage() resets overridden, so this can't
-    re-fire mid-latch."""
-    if override_latch.overridden and override_latch.trip_seq != self._last_seen_trip_seq:
+  def _read_params(self) -> None:
+    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+      try:
+        self.enabled = self._params.get_bool("LeadClosingTestGuidance")
+      except UnknownKeyName:
+        self.enabled = False
+
+  def update(self, lead, long_enabled: bool, v_ego: float, v_cruise_cluster: float,
+             gas_pressed: bool, brake_pressed: bool, events_sp: EventsSP) -> None:
+    self._read_params()
+    self.t += DT_MDL
+
+    if gas_pressed or brake_pressed:
+      self.last_pedal_t = self.t
+
+    closing = lead.status and lead.vRel < CLOSING_VREL_THRESHOLD
+    if closing:
+      if self.closing_since is None:
+        self.closing_since = self.t
+    else:
+      self.closing_since = None
+
+    sustained = self.closing_since is not None and (self.t - self.closing_since) >= SUSTAIN_TIME
+    no_recent_pedal = (self.t - self.last_pedal_t) >= NO_RECENT_PEDAL_TIME
+
+    self.v_target = lead.vLeadK + TARGET_MARGIN
+    above_target = v_cruise_cluster > (self.v_target + CONVERGED_TOLERANCE)
+
+    self.active = bool(self.enabled and long_enabled and v_ego >= MIN_ADVISORY_SPEED
+                        and sustained and no_recent_pedal and above_target)
+
+    if self.active and (self.t - self.last_fire_t) >= REPEAT_INTERVAL:
       events_sp.add(EventNameSP.leadClosingTestGuidance)
-      self._last_seen_trip_seq = override_latch.trip_seq
+      self.last_fire_t = self.t
+
+    self.frame += 1

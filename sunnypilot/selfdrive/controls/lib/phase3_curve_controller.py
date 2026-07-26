@@ -198,9 +198,6 @@ class Phase3CurveController:
     dist_available_ft = distance_m * 3.28084
 
     is_active = map_state == MapState.turning
-    self.is_active = is_active  # exported for the UI status dot (phase3_shared.write_ui_status)
-                                  # - use this, not self.decision, since decision flickers
-                                  # hold/fire every MIN_COMMAND_INTERVAL_S even mid-curve
     gated_on = self.armed and long_enabled
 
     if gated_on and not self.was_gated_on:

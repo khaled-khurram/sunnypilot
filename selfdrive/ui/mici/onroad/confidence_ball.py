@@ -8,10 +8,6 @@ from openpilot.common.filter_simple import FirstOrderFilter
 
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.confidence_ball import ConfidenceBallSP
 
-CONFIDENCE_BALL_RADIUS = 24  # extracted 2026-07-26 so phase3_dots.py can size dots
-                               # relative to the real ball radius instead of a second
-                               # hardcoded 24
-
 
 def draw_circle_gradient(center_x: float, center_y: float, radius: int,
                          top: rl.Color, bottom: rl.Color) -> None:
@@ -58,7 +54,7 @@ class ConfidenceBall(Widget, ConfidenceBallSP):
       self.rect.height,
     )
 
-    status_dot_radius = CONFIDENCE_BALL_RADIUS
+    status_dot_radius = 24
     dot_height = (1 - self._confidence_filter.x) * (content_rect.height - 2 * status_dot_radius) + status_dot_radius
     dot_height = self._rect.y + dot_height
 
