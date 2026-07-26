@@ -41,6 +41,16 @@ LEAD_ARM_FILE = "/data/phase3_lead_armed"
 SLF_ARM_FILE = "/data/phase3_slf_armed"  # speed-limit-following, added 2026-07-24 -
                                            # same isolated-rollout-risk pattern as lead
 
+# UI status transport (2026-07-26): plannerd writes, both the UI process (status dots)
+# and selfdrived (one-shot override alert text) read - independently, plain-file, same
+# reasoning as CURVE_ARM_FILE above. Not Params, not a new capnp field - both hit the
+# same compiled-allowlist/codegen landmine on this prebuilt branch.
+UI_STATUS_FILE = "/data/phase3_ui_status.json"
+UI_STATUS_WRITE_INTERVAL_FRAMES = 5   # ~0.25s @ 20Hz plannerd - cheap, still sub-300ms
+                                       # latency for dot transitions and the trip_seq
+                                       # edge signal
+UI_STATUS_STALENESS_S = 2.0
+
 # Speed-limit-following constants (2026-07-24). The buffer itself (formerly a hardcoded
 # SLF_BUFFER_MPH=5.0 here, hitting the same compiled-Params-allowlist landmine every other
 # new Phase3 param has on this prebuilt branch) was removed 2026-07-25 in favor of
@@ -263,6 +273,11 @@ class Phase3OverrideLatch:
                                            # actually tripped it, added 2026-07-24 after
                                            # the first live drive left this undiagnosable
                                            # from the shadow log alone
+    self.trip_seq = 0  # added 2026-07-26: monotonic, incremented only on the false->true
+                         # transition - lets a consumer in a different process (the
+                         # one-shot alert trigger) detect "this is a NEW trip" vs "still
+                         # overridden from a previous cycle" without re-deriving edges
+                         # from overridden alone, which can't distinguish the two.
 
   def clear_on_reengage(self) -> None:
     """Called once per planner cycle from longitudinal_planner.py on a real rising edge
@@ -289,6 +304,45 @@ class Phase3OverrideLatch:
     if reasons:
       self.overridden = True
       self.trip_reason = "+".join(reasons)
+      self.trip_seq += 1
+
+
+def write_ui_status(curve_armed: bool, curve_active: bool, lead_armed: bool, lead_active: bool,
+                     slf_armed: bool, slf_active: bool, overridden: bool,
+                     trip_reason: str | None, trip_seq: int) -> None:
+  """Best-effort, atomic write of the UI/alert status blob. Same 'never raise into the
+  control loop' contract as log_shadow_decision below - a failed write here must never
+  affect a planner cycle."""
+  payload = {
+    "t": time.time(),
+    "curve": {"armed": curve_armed, "active": curve_active},
+    "lead": {"armed": lead_armed, "active": lead_active},
+    "slf": {"armed": slf_armed, "active": slf_active},
+    "overridden": overridden, "trip_reason": trip_reason, "trip_seq": trip_seq,
+  }
+  try:
+    tmp = UI_STATUS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+      f.write(json.dumps(payload))
+    os.replace(tmp, UI_STATUS_FILE)  # atomic rename - no half-written reads
+  except OSError:
+    pass
+
+
+def read_ui_status() -> dict | None:
+  """Used by selfdrived's one-shot alert text lookup (a different process than the
+  writer). Returns None if the file is missing, malformed, or stale - callers must
+  treat that as 'no status available,' not 'everything off,' though in practice a
+  missing/stale file does mean plannerd isn't running Phase 3 right now either way."""
+  try:
+    with open(UI_STATUS_FILE) as f:
+      status = json.loads(f.read())
+    if time.time() - status["t"] > UI_STATUS_STALENESS_S:
+      return None
+  except (FileNotFoundError, ValueError, KeyError, OSError):
+    return None
+  return status
+
 
 def log_shadow_decision(feature: str, **fields) -> None:
   """Append one JSONL entry to the shared shadow log. Never raises into the control

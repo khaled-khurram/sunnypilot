@@ -259,6 +259,14 @@ class Phase3SlfController:
     # 73->70 descent, same few seconds, 2026-07-24 20:10:12-16). Skipping SLF's own step
     # completely while curve or lead has something active - not just losing ties - closes
     # that gap; SLF resumes on its own goal the moment both go dormant again.
+    # Exported for the UI status dot (phase3_shared.write_ui_status): SLF still counts
+    # as "active" while yielding, since it has a real target it's genuinely pursuing,
+    # just paused for this one arbiter cycle - not idle. Confirmed intentional: the
+    # alternative (active only when self.decision is fire/restore) would make the dot
+    # flicker every time curve or lead briefly takes priority, which is routine, not
+    # notable.
+    self.is_active = self.slf_target_mph is not None and not self.segment_pinned
+
     if curve_active or lead_active:
       self.decision = "hold-yielding"
     elif self.slf_target_mph is not None and not self.segment_pinned:

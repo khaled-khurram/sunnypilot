@@ -11,7 +11,8 @@ from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot.selfdrive.controls.lib.curve_advisory_helper import CurveAdvisoryHelper
-from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import Phase3OverrideLatch, Phase3CommandArbiter
+from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import Phase3OverrideLatch, Phase3CommandArbiter, \
+  write_ui_status, UI_STATUS_WRITE_INTERVAL_FRAMES
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_curve_controller import Phase3CurveController
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_lead_controller import Phase3LeadController
 from openpilot.sunnypilot.selfdrive.controls.lib.phase3_slf_controller import Phase3SlfController
@@ -45,6 +46,7 @@ class LongitudinalPlannerSP:
     # Phase3CommandArbiter's own docstring). Also enforces the whole-drive
     # SESSION_COMMAND_CAP backstop across both features combined.
     self.phase3_command_arbiter = Phase3CommandArbiter()
+    self._phase3_ui_status_frame = 0  # throttle counter for write_ui_status() below
     self.phase3_curve_controller = Phase3CurveController(self.phase3_override_latch, self.phase3_command_arbiter)
     self.phase3_lead_controller = Phase3LeadController(self.phase3_override_latch, self.phase3_command_arbiter)
     # Third Phase 3 feature (2026-07-24) - speed-limit-following. Called last, after
@@ -102,8 +104,7 @@ class LongitudinalPlannerSP:
                                         CS.gasPressed, CS.brakePressed, CS.steeringPressed)
     self.lead_closing_advisory.update(sm['radarState'].leadOne, long_enabled, v_ego,
                                        CS.gasPressed, CS.brakePressed, self.events_sp)
-    self.lead_closing_test_guidance.update(sm['radarState'].leadOne, long_enabled, v_ego, v_cruise_cluster,
-                                            CS.gasPressed, CS.brakePressed, self.events_sp)
+    self.lead_closing_test_guidance.update(self.phase3_override_latch, self.events_sp)
 
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm)
@@ -127,6 +128,19 @@ class LongitudinalPlannerSP:
     self.phase3_slf_controller.update(slf_limit_mph, long_enabled, v_ego, v_cruise,
                                        CS.gasPressed, CS.brakePressed, CS.steeringPressed,
                                        self.phase3_curve_controller.was_active, self.phase3_lead_controller.in_episode)
+
+    # UI status dots + one-shot alert transport (2026-07-26) - throttled plain-file
+    # write, read independently by the UI process and by selfdrived's alert-text lookup.
+    # See phase3_shared.write_ui_status()'s own docstring for why this isn't Params/capnp.
+    self._phase3_ui_status_frame += 1
+    if self._phase3_ui_status_frame % UI_STATUS_WRITE_INTERVAL_FRAMES == 0:
+      write_ui_status(
+        self.phase3_curve_controller.armed, self.phase3_curve_controller.is_active,
+        self.phase3_lead_controller.armed, self.phase3_lead_controller.in_episode,
+        self.phase3_slf_controller.armed, self.phase3_slf_controller.is_active,
+        self.phase3_override_latch.overridden, self.phase3_override_latch.trip_reason,
+        self.phase3_override_latch.trip_seq,
+      )
 
     # Speed Limit Assist
     has_speed_limit = self.resolver.speed_limit_valid or self.resolver.speed_limit_last_valid
@@ -205,7 +219,10 @@ class LongitudinalPlannerSP:
     assist.vTarget = float(self.sla.output_v_target)
     assist.aTarget = float(self.sla.output_a_target)
 
-    # Lead-closing test guidance (validation tool, opt-in, off by default)
+    # Inert as of 2026-07-26 - LeadClosingTestGuidanceHelper was repurposed to fire the
+    # Phase 3 override-trip alert (see its own docstring) and no longer tracks a real
+    # closing-speed target. v_target/active are kept as permanently-zeroed stubs only
+    # so this publish call doesn't need a capnp schema change.
     leadClosingTest = longitudinalPlanSP.leadClosingTest
     leadClosingTest.vTarget = float(self.lead_closing_test_guidance.v_target)
     leadClosingTest.active = self.lead_closing_test_guidance.active
