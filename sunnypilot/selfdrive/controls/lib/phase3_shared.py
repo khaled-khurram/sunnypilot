@@ -232,18 +232,13 @@ def read_command_if_safe(gas_pressed: bool, brake_pressed: bool, steering_presse
 class Phase3OverrideLatch:
   """
   Shared, session-long driver-override latch for ALL Phase 3 actuation features.
-  User's own words (2026-07-24): "if I just tap brakes once, everything goes dark" - a
-  single override event (brake/steering/gas) must latch off every Phase 3 feature
-  together, not just whichever one happened to be acting at that moment. Every
-  controller must hold a reference to the SAME instance, not its own private copy.
-  Re-arms on a fresh cruise engagement (2026-07-24, corrected same night after the user
-  clarified this in plain terms: "if I tap those override latches everything goes dark
-  UNTIL I actually set the cruise again then it all comes back" - NOT "off for the rest
-  of the drive, only clears on a full ignition cycle," which is what an earlier reading
-  of "everything goes dark" had been implemented as. Real, named tradeoff: this is less
-  sticky than a whole-drive lockout - a quick disengage/re-engage brings Phase 3 straight
-  back regardless of whether whatever caused the override is still true. Built this way
-  anyway because that's the explicit, twice-clarified ask, not a default worth assuming.
+  Re-arms on a fresh cruise engagement (2026-07-24): "if I tap [the latch] everything
+  goes dark UNTIL I actually set the cruise again then it all comes back" - NOT "off
+  for the rest of the drive, only clears on a full ignition cycle." Real, named
+  tradeoff: this is less sticky than a whole-drive lockout - a quick disengage/re-engage
+  brings Phase 3 straight back regardless of whether whatever caused the override is
+  still true. Built this way anyway because that's the explicit ask, not a default
+  worth assuming.
 
   Pedal-only as of 2026-07-25: an inferred external button press (`trip_button()`, now
   removed) used to latch everything off too when curve/lead had something in flight -
@@ -253,8 +248,18 @@ class Phase3OverrideLatch:
   was pressed" was always an inference, never a certainty, and killing three live
   features on that inference cost more than it protected. A detected button press now
   routes to SLF's pin-and-hold behavior unconditionally instead (see
-  phase3_slf_controller.py) - the correction still registers, but pedal input remains
-  the only thing that latches everything off.
+  phase3_slf_controller.py).
+
+  Brake-only as of 2026-08-03: user's explicit call - "brake is a great safety gate
+  anyways, steering and gas shouldn't disengage Phase 3." gas_pressed/steering_pressed
+  are still accepted as args (call sites unchanged) but no longer trip the latch.
+  NOT changed: `_phase3_read_command_if_safe` in opendbc/car/subaru/carcontroller.py -
+  that's a separate, per-cycle "don't send a CAN write this exact instant" gate right
+  before the real transmit, independent of this persistent latch, and stays
+  conservative (still gas/brake/steering/real-button) on purpose - narrowing it would
+  let a simulated button press go out in the exact frame the driver has a foot on the
+  gas or is mid-steering-correction, which is a different question than what
+  permanently disarms the feature for the rest of the drive.
   """
 
   def __init__(self):
@@ -282,10 +287,13 @@ class Phase3OverrideLatch:
     # constants duplicated there, see that file's own _phase3_read_command_if_safe)
     # already re-checks the real button-press condition correctly every cycle from the
     # object that actually has it - this latch not seeing it doesn't weaken that.
+    #
+    # gas_pressed/steering_pressed intentionally ignored here as of 2026-08-03 - see
+    # class docstring. Only brake trips the persistent latch now.
     if self.overridden:
       return  # already tripped - don't overwrite the reason that actually caused it
     reasons = [name for name, pressed in
-               (("gas", gas_pressed), ("brake", brake_pressed), ("steering", steering_pressed)) if pressed]
+               (("brake", brake_pressed),) if pressed]
     if reasons:
       self.overridden = True
       self.trip_reason = "+".join(reasons)
