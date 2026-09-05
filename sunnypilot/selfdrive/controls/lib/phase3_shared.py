@@ -7,6 +7,8 @@ See the LICENSE.md file in the root directory for more details.
 import os
 import json
 import time
+import queue
+import threading
 
 # Shadow log: written by every Phase 3 feature regardless of arm state, purely for
 # observability. Never read by carcontroller.py or any car-interface code.
@@ -270,22 +272,47 @@ class Phase3OverrideLatch:
       self.overridden = True
       self.trip_reason = "+".join(reasons)
 
-def log_shadow_decision(feature: str, **fields) -> None:
-  """Append one JSONL entry to the shared shadow log. Never raises into the control
-  loop - a logging failure must never affect a decision.
+# The write itself is still a synchronous disk op, just no longer on the real-time
+# thread (2026-09-05, part 2): a first fix (removing read_eyesight_state(), see
+# below) only cut the hot-path exposure in half - real post-fix driving data the
+# same day showed the write alone still stalling longitudinalPlan/SP/
+# driverAssistance by 130-232ms (one gap even bigger than any seen pre-fix),
+# confirming the remaining open()+write() was still a live risk, not just a
+# theoretical one. This queue+dedicated-thread setup moves the actual disk I/O
+# off plannerd's thread entirely: log_shadow_decision() below now only does an
+# in-memory queue.put_nowait(), a few microseconds regardless of disk state.
+# Bounded (SHADOW_QUEUE_MAXSIZE) with drop-newest-on-full rather than blocking or
+# growing unbounded if the disk falls behind for a long stretch - matches this
+# function's existing "never let logging affect a decision" contract, extended
+# to "never let logging affect timing" too.
+SHADOW_QUEUE_MAXSIZE = 256
+_shadow_queue: queue.Queue = queue.Queue(maxsize=SHADOW_QUEUE_MAXSIZE)
 
-  No longer reads EyeSight state here (removed 2026-09-05): that was a second
-  synchronous file open+read on every call, on top of the write below, both
-  unguarded against slow disk I/O inside plannerd's real-time loop. Empirically
-  confirmed (fault-injected 150ms open() delay -> 300.7ms real call time, both
-  calls each absorbing the delay in full, nothing bounding either) as the
-  mechanism behind the 2026-09-04/05 commIssue disengages - see
-  project_friday_trip_commissue_recurrence memory. This function was the only
-  caller of read_eyesight_state(), and the eyesight fields were shadow-log-only
-  observability, never read by any controller's actual decision."""
+
+def _shadow_writer_loop() -> None:
+  while True:
+    entry = _shadow_queue.get()
+    try:
+      with open(SHADOW_LOG_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    except OSError:
+      pass
+
+
+threading.Thread(target=_shadow_writer_loop, daemon=True, name="phase3-shadow-writer").start()
+
+
+def log_shadow_decision(feature: str, **fields) -> None:
+  """Enqueue one JSONL entry for the shared shadow log. Never raises into the
+  control loop and never blocks it either - a logging failure or a slow disk
+  must never affect a decision or its timing. See the module comment above the
+  writer thread for the 2026-09-05 history of why this isn't a direct write.
+
+  Also no longer reads EyeSight state here (removed 2026-09-05, part 1): that
+  was a second synchronous file open+read on every call, on top of the write -
+  see project_friday_trip_commissue_recurrence memory for the full incident."""
   entry = {"t": time.time(), "feature": feature, **fields}
   try:
-    with open(SHADOW_LOG_FILE, "a") as f:
-      f.write(json.dumps(entry) + "\n")
-  except OSError:
-    pass
+    _shadow_queue.put_nowait(entry)
+  except queue.Full:
+    pass  # disk can't keep up - drop this entry rather than block or grow unbounded
