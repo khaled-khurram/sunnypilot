@@ -19,17 +19,6 @@ SHADOW_LOG_FILE = "/data/phase3_shadow_log.jsonl"
 # logic, this is the only thing with real-world effect.
 COMMAND_FILE = "/data/phase3_button_command"
 
-# Observability-only (2026-07-24): written by carcontroller.py's PREGLOBAL block from
-# EyeSight's own real, unmodified ES_Distance message every 5 frames - Car_Follow is
-# EyeSight's own lead-lock bit, Close_Distance a bounded (0-5m per the DBC scale, likely
-# a dash-icon proximity value, not a true following-gap distance) closeness reading.
-# Read into every shadow log entry below so real drives answer, with data instead of a
-# guess, whether Phase 3 acted before or after EyeSight already had its own lock - see
-# the 2026-07-24 drive postmortem (80->71 lead-closing drop, EyeSight locked throughout).
-# Purely additive: nothing here changes any controller's decision or gating.
-EYESIGHT_STATE_FILE = "/data/phase3_eyesight_state.txt"
-EYESIGHT_STATE_STALENESS_S = 1.0  # generous - shadow-log-only, nothing time-critical reads this
-
 # Flag-file arming (2026-07-24) - NOT Params(), which hits a compiled-allowlist landmine
 # on this prebuilt branch that always falls back to a hardcoded default no matter what
 # gets set (same landmine CurveSpeedAdvisory/Phase3Armed/Phase3LeadArmed all hit - see
@@ -146,23 +135,6 @@ BUTTON_RESUME_SHALLOW = 4
 
 def is_armed(flag_file: str) -> bool:
   return os.path.exists(flag_file)
-
-
-def read_eyesight_state() -> tuple[bool | None, float | None]:
-  """EyeSight's own real Car_Follow/Close_Distance, written by carcontroller.py's
-  PREGLOBAL block (see EYESIGHT_STATE_FILE above). Returns (None, None) if the file is
-  missing or stale - callers must treat that as "unknown," not "False"/"0", since a
-  missing file just means carcontroller.py hasn't written one yet (e.g. right after
-  boot) or the car isn't a PREGLOBAL Subaru at all."""
-  try:
-    with open(EYESIGHT_STATE_FILE) as f:
-      raw = f.read().strip().split()
-    car_follow, close_distance_m, ts = int(raw[0]), float(raw[1]), float(raw[2])
-  except (FileNotFoundError, ValueError, IndexError, OSError):
-    return None, None
-  if time.time() - ts > EYESIGHT_STATE_STALENESS_S:
-    return None, None
-  return bool(car_follow), close_distance_m
 
 
 class Phase3CommandArbiter:
@@ -300,10 +272,18 @@ class Phase3OverrideLatch:
 
 def log_shadow_decision(feature: str, **fields) -> None:
   """Append one JSONL entry to the shared shadow log. Never raises into the control
-  loop - a logging failure must never affect a decision."""
-  car_follow, close_distance_m = read_eyesight_state()
-  entry = {"t": time.time(), "feature": feature, "eyesight_car_follow": car_follow,
-           "eyesight_close_distance_m": close_distance_m, **fields}
+  loop - a logging failure must never affect a decision.
+
+  No longer reads EyeSight state here (removed 2026-09-05): that was a second
+  synchronous file open+read on every call, on top of the write below, both
+  unguarded against slow disk I/O inside plannerd's real-time loop. Empirically
+  confirmed (fault-injected 150ms open() delay -> 300.7ms real call time, both
+  calls each absorbing the delay in full, nothing bounding either) as the
+  mechanism behind the 2026-09-04/05 commIssue disengages - see
+  project_friday_trip_commissue_recurrence memory. This function was the only
+  caller of read_eyesight_state(), and the eyesight fields were shadow-log-only
+  observability, never read by any controller's actual decision."""
+  entry = {"t": time.time(), "feature": feature, **fields}
   try:
     with open(SHADOW_LOG_FILE, "a") as f:
       f.write(json.dumps(entry) + "\n")
