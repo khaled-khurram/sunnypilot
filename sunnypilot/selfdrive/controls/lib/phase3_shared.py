@@ -7,8 +7,6 @@ See the LICENSE.md file in the root directory for more details.
 import os
 import json
 import time
-import queue
-import threading
 
 # Shadow log: written by every Phase 3 feature regardless of arm state, purely for
 # observability. Never read by carcontroller.py or any car-interface code.
@@ -20,6 +18,17 @@ SHADOW_LOG_FILE = "/data/phase3_shadow_log.jsonl"
 # feature that actually matters for CAN output - everything upstream of it is decision
 # logic, this is the only thing with real-world effect.
 COMMAND_FILE = "/data/phase3_button_command"
+
+# Observability-only (2026-07-24): written by carcontroller.py's PREGLOBAL block from
+# EyeSight's own real, unmodified ES_Distance message every 5 frames - Car_Follow is
+# EyeSight's own lead-lock bit, Close_Distance a bounded (0-5m per the DBC scale, likely
+# a dash-icon proximity value, not a true following-gap distance) closeness reading.
+# Read into every shadow log entry below so real drives answer, with data instead of a
+# guess, whether Phase 3 acted before or after EyeSight already had its own lock - see
+# the 2026-07-24 drive postmortem (80->71 lead-closing drop, EyeSight locked throughout).
+# Purely additive: nothing here changes any controller's decision or gating.
+EYESIGHT_STATE_FILE = "/data/phase3_eyesight_state.txt"
+EYESIGHT_STATE_STALENESS_S = 1.0  # generous - shadow-log-only, nothing time-critical reads this
 
 # Flag-file arming (2026-07-24) - NOT Params(), which hits a compiled-allowlist landmine
 # on this prebuilt branch that always falls back to a hardcoded default no matter what
@@ -137,6 +146,23 @@ BUTTON_RESUME_SHALLOW = 4
 
 def is_armed(flag_file: str) -> bool:
   return os.path.exists(flag_file)
+
+
+def read_eyesight_state() -> tuple[bool | None, float | None]:
+  """EyeSight's own real Car_Follow/Close_Distance, written by carcontroller.py's
+  PREGLOBAL block (see EYESIGHT_STATE_FILE above). Returns (None, None) if the file is
+  missing or stale - callers must treat that as "unknown," not "False"/"0", since a
+  missing file just means carcontroller.py hasn't written one yet (e.g. right after
+  boot) or the car isn't a PREGLOBAL Subaru at all."""
+  try:
+    with open(EYESIGHT_STATE_FILE) as f:
+      raw = f.read().strip().split()
+    car_follow, close_distance_m, ts = int(raw[0]), float(raw[1]), float(raw[2])
+  except (FileNotFoundError, ValueError, IndexError, OSError):
+    return None, None
+  if time.time() - ts > EYESIGHT_STATE_STALENESS_S:
+    return None, None
+  return bool(car_follow), close_distance_m
 
 
 class Phase3CommandArbiter:
@@ -272,78 +298,14 @@ class Phase3OverrideLatch:
       self.overridden = True
       self.trip_reason = "+".join(reasons)
 
-# The write itself is still a synchronous disk op, just no longer on the real-time
-# thread (2026-09-05, part 2): a first fix (removing read_eyesight_state(), see
-# below) only cut the hot-path exposure in half - real post-fix driving data the
-# same day showed the write alone still stalling longitudinalPlan/SP/
-# driverAssistance by 130-232ms (one gap even bigger than any seen pre-fix),
-# confirming the remaining open()+write() was still a live risk, not just a
-# theoretical one. This queue+dedicated-thread setup moves the actual disk I/O
-# off plannerd's thread entirely: log_shadow_decision() below now only does an
-# in-memory queue.put_nowait(), a few microseconds regardless of disk state.
-# Bounded (SHADOW_QUEUE_MAXSIZE) with drop-newest-on-full rather than blocking or
-# growing unbounded if the disk falls behind for a long stretch - matches this
-# function's existing "never let logging affect a decision" contract, extended
-# to "never let logging affect timing" too.
-#
-# The writer thread MUST be started lazily (2026-09-07 correction, not at
-# import time): system/manager/manager.py pre-imports every registered
-# process's module - including this one, via longitudinal_planner.py - in the
-# single manager PARENT process before forking any child (system/manager/
-# process.py uses multiprocessing.Process, which defaults to fork() on
-# Linux). A thread started as a module-level side effect at import time runs
-# in that shared parent, and every other process - soundd, ui, everything -
-# then gets forked from that same now-multi-threaded parent. That's the
-# classic "fork() after starting threads" hazard: if the fork lands while
-# this thread holds any lock (even an unrelated CPython-internal one, not
-# just this module's own queue), the forked child inherits it permanently
-# locked with no thread left alive to release it - a real, timing-dependent
-# contributing factor to a same-night soundd/manager crash cascade (see
-# project_friday_trip_commissue_recurrence memory's 2026-09-07 update).
-# Starting the thread lazily, on the first real call, means it only ever
-# starts inside plannerd's own already-forked child process during actual
-# driving - long after manager's one-time startup fork - never in the shared
-# parent.
-SHADOW_QUEUE_MAXSIZE = 256
-_shadow_queue: queue.Queue = queue.Queue(maxsize=SHADOW_QUEUE_MAXSIZE)
-_shadow_writer_thread: threading.Thread | None = None
-_shadow_writer_start_lock = threading.Lock()
-
-
-def _shadow_writer_loop() -> None:
-  while True:
-    entry = _shadow_queue.get()
-    try:
-      with open(SHADOW_LOG_FILE, "a") as f:
-        f.write(json.dumps(entry) + "\n")
-    except OSError:
-      pass
-
-
-def _ensure_shadow_writer_started() -> None:
-  global _shadow_writer_thread
-  if _shadow_writer_thread is not None:
-    return
-  with _shadow_writer_start_lock:
-    if _shadow_writer_thread is None:
-      _shadow_writer_thread = threading.Thread(target=_shadow_writer_loop, daemon=True, name="phase3-shadow-writer")
-      _shadow_writer_thread.start()
-
-
 def log_shadow_decision(feature: str, **fields) -> None:
-  """Enqueue one JSONL entry for the shared shadow log. Never raises into the
-  control loop and never blocks it either - a logging failure or a slow disk
-  must never affect a decision or its timing. See the module comment above the
-  writer thread for the 2026-09-05/07 history of why this isn't a direct
-  write, and why the writer thread starts lazily here rather than at import
-  time.
-
-  Also no longer reads EyeSight state here (removed 2026-09-05, part 1): that
-  was a second synchronous file open+read on every call, on top of the write -
-  see project_friday_trip_commissue_recurrence memory for the full incident."""
-  _ensure_shadow_writer_started()
-  entry = {"t": time.time(), "feature": feature, **fields}
+  """Append one JSONL entry to the shared shadow log. Never raises into the control
+  loop - a logging failure must never affect a decision."""
+  car_follow, close_distance_m = read_eyesight_state()
+  entry = {"t": time.time(), "feature": feature, "eyesight_car_follow": car_follow,
+           "eyesight_close_distance_m": close_distance_m, **fields}
   try:
-    _shadow_queue.put_nowait(entry)
-  except queue.Full:
-    pass  # disk can't keep up - drop this entry rather than block or grow unbounded
+    with open(SHADOW_LOG_FILE, "a") as f:
+      f.write(json.dumps(entry) + "\n")
+  except OSError:
+    pass
