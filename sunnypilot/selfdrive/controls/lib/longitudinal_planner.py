@@ -8,13 +8,8 @@ See the LICENSE.md file in the root directory for more details.
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
-from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot.selfdrive.controls.lib.curve_advisory_helper import CurveAdvisoryHelper
-from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared import Phase3OverrideLatch, Phase3CommandArbiter
-from openpilot.sunnypilot.selfdrive.controls.lib.phase3_curve_controller import Phase3CurveController
-from openpilot.sunnypilot.selfdrive.controls.lib.phase3_lead_controller import Phase3LeadController
-from openpilot.sunnypilot.selfdrive.controls.lib.phase3_slf_controller import Phase3SlfController
 from openpilot.sunnypilot.selfdrive.controls.lib.lead_closing_advisory_helper import LeadClosingAdvisoryHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.lead_closing_test_guidance_helper import LeadClosingTestGuidanceHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
@@ -36,22 +31,6 @@ class LongitudinalPlannerSP:
     self.dec = DynamicExperimentalController(CP, mpc)
     self.scc = SmartCruiseControl()
     self.curve_advisory = CurveAdvisoryHelper()
-    # Shared across every Phase 3 actuation feature - one override event latches all of
-    # them off together (see phase3_shared.Phase3OverrideLatch docstring).
-    self.phase3_override_latch = Phase3OverrideLatch()
-    self.phase3_was_long_enabled = False  # for the latch's clear_on_reengage() edge detection
-    # Shared arbiter: only one real button command can be written per planner cycle -
-    # curve controller is called first below and wins ties on purpose (see
-    # Phase3CommandArbiter's own docstring). Also enforces the whole-drive
-    # SESSION_COMMAND_CAP backstop across both features combined.
-    self.phase3_command_arbiter = Phase3CommandArbiter()
-    self.phase3_curve_controller = Phase3CurveController(self.phase3_override_latch, self.phase3_command_arbiter)
-    self.phase3_lead_controller = Phase3LeadController(self.phase3_override_latch, self.phase3_command_arbiter)
-    # Third Phase 3 feature (2026-07-24) - speed-limit-following. Called last, after
-    # curve/lead, both so it naturally loses arbiter ties to them (§6's priority order)
-    # and so its own context-gated button routing can read curve/lead's CURRENT-frame
-    # was_active/in_episode state, not last frame's.
-    self.phase3_slf_controller = Phase3SlfController(self.phase3_override_latch, self.phase3_command_arbiter)
     self.lead_closing_advisory = LeadClosingAdvisoryHelper()
     self.lead_closing_test_guidance = LeadClosingTestGuidanceHelper()
     self.resolver = SpeedLimitResolver()
@@ -78,28 +57,9 @@ class LongitudinalPlannerSP:
     long_enabled = sm['carControl'].enabled
     long_override = sm['carControl'].cruiseControl.override
 
-    # Rising edge of cruise-enabled ("set the cruise again") clears the shared Phase 3
-    # override latch - see Phase3OverrideLatch.clear_on_reengage()'s own docstring for
-    # why this replaced the original whole-drive-lockout behavior. Checked once here,
-    # shared across curve/lead/SLF, not duplicated per controller.
-    if long_enabled and not self.phase3_was_long_enabled:
-      self.phase3_override_latch.clear_on_reengage()
-    self.phase3_was_long_enabled = long_enabled
-
     # Smart Cruise Control
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
     self.curve_advisory.update(self.scc.map.state, long_enabled, v_ego, self.events_sp)
-    self.phase3_command_arbiter.new_cycle(DT_MDL)  # reset the one-write-per-cycle gate, tick the shared clock
-    # NOTE: CS.cruise_button is deliberately NOT passed here (2026-07-24 postmortem,
-    # crashed plannerd outright: "struct has no such member; name = cruise_button" -
-    # that field only exists on opendbc's raw CarState object inside carcontroller.py,
-    # a different object than this capnp-published sm['carState']/CS). Not a safety
-    # gap - see Phase3OverrideLatch.check()'s own docstring for why.
-    self.phase3_curve_controller.update(self.scc.map.state, self.scc.map.distance, self.scc.map.output_v_target,
-                                         long_enabled, v_ego, v_cruise,
-                                         CS.gasPressed, CS.brakePressed, CS.steeringPressed)
-    self.phase3_lead_controller.update(sm['radarState'].leadOne, long_enabled, v_ego, v_cruise,
-                                        CS.gasPressed, CS.brakePressed, CS.steeringPressed)
     self.lead_closing_advisory.update(sm['radarState'].leadOne, long_enabled, v_ego,
                                        CS.gasPressed, CS.brakePressed, self.events_sp)
     self.lead_closing_test_guidance.update(sm['radarState'].leadOne, long_enabled, v_ego, v_cruise_cluster,
@@ -107,26 +67,6 @@ class LongitudinalPlannerSP:
 
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm)
-
-    # Phase 3 speed-limit-following (2026-07-24) - own, self-contained implementation,
-    # deliberately not built on top of SpeedLimitAssist above: that class is a large,
-    # unfamiliar state machine whose button-based path may itself depend on
-    # CS.buttonEvents, the exact field already confirmed empty on this preglobal car -
-    # not audited under today's time constraint, worth a real look separately rather
-    # than risking an unverified adaptation. Reuses the resolver's already-computed
-    # speed_limit (m/s) exactly like curve reuses MTSC's output_v_target - no duplicate
-    # computation. Called after curve/lead so it naturally loses arbiter ties to both
-    # (§6 priority: curve > lead > slf) and so its context-gated button routing reads
-    # curve/lead's current-frame was_active/in_episode.
-    # speed_limit_final (not raw speed_limit) so SLF's buffer comes from the native, already
-    # on-screen "Speed Limit" settings page (Offset Type/Value) instead of a hardcoded
-    # constant (2026-07-25) - resolver computes speed_limit_final = speed_limit +
-    # speed_limit_offset unconditionally every cycle, so this is safe to read whenever
-    # speed_limit_valid is true, same gating as before.
-    slf_limit_mph = self.resolver.speed_limit_final * CV.MS_TO_MPH if self.resolver.speed_limit_valid else None
-    self.phase3_slf_controller.update(slf_limit_mph, long_enabled, v_ego, v_cruise,
-                                       CS.gasPressed, CS.brakePressed, CS.steeringPressed,
-                                       self.phase3_curve_controller.was_active, self.phase3_lead_controller.in_episode)
 
     # Speed Limit Assist
     has_speed_limit = self.resolver.speed_limit_valid or self.resolver.speed_limit_last_valid

@@ -8,49 +8,6 @@ from opendbc.car.subaru.values import DBC, GLOBAL_ES_ADDR, CanBus, CarController
 
 from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarController
 
-# --- Phase 3 read-and-gate, self-contained (2026-07-24) ---
-# Deliberately NOT imported from openpilot.sunnypilot.selfdrive.controls.lib.phase3_shared:
-# opendbc is a lower-level car-interface library with zero existing precedent anywhere in
-# this tree (checked the whole opendbc/ tree, including sunnypilot's own extension
-# namespace) for importing from openpilot's planning stack - that would be a new, one-off
-# layering violation in the single most safety-critical file in the codebase. Duplicated
-# instead. COMMAND_FILE and _PHASE3_STALENESS_S MUST match phase3_shared.py's
-# COMMAND_FILE/COMMAND_STALENESS_S exactly - if one changes, change both.
-import time as _time
-
-_PHASE3_COMMAND_FILE = "/data/phase3_button_command"
-_PHASE3_STALENESS_S = 0.3
-
-# Observability-only (2026-07-24): EyeSight's own real, unmodified Car_Follow/
-# Close_Distance from the incoming ES_Distance message - the same message this file
-# already re-transmits every 5 frames with only the button field overridden. Written
-# here (not read here) so phase3_shared.py's shadow log can record whether EyeSight
-# already had its own lead lock at the moment any Phase 3 feature acted - answers "did
-# Phase 3 duplicate a job EyeSight was already doing" with real data instead of a guess.
-# No gating/behavior effect - nothing in this file reads this back.
-_PHASE3_EYESIGHT_STATE_FILE = "/data/phase3_eyesight_state.txt"
-
-
-def _phase3_read_command_if_safe(gas_pressed: bool, brake_pressed: bool, steering_pressed: bool,
-                                  real_button_pressed: bool) -> int | None:
-  """Independent final gate before any real cruise_button override - re-checks the
-  override guarantee here too, not just trusting plannerd's upstream decision
-  (research/phase3_controller_design.md §3: "the override check must be the single
-  first gate wrapping the entire 'maybe send a command' block"). Returns None (fall
-  back to plain relay of CS.cruise_button, today's exact shipped behavior) unless the
-  file exists, is fresh, and nothing overrides."""
-  if gas_pressed or brake_pressed or steering_pressed or real_button_pressed:
-    return None
-  try:
-    with open(_PHASE3_COMMAND_FILE) as f:
-      raw = f.read().strip().split()
-    value, ts = int(raw[0]), float(raw[1])
-  except (FileNotFoundError, ValueError, IndexError, OSError):
-    return None
-  if _time.time() - ts > _PHASE3_STALENESS_S:
-    return None
-  return value
-
 # FIXME: These limits aren't exact. The real limit is more than likely over a larger time period and
 # involves the total steering angle change rather than rate, but these limits work well for now
 MAX_STEER_RATE = 25  # deg/s
@@ -130,9 +87,7 @@ class CarController(CarControllerBase, SnGCarController):
         elif not CS.out.cruiseState.available and CS.ready:
           cruise_button = 1
         else:
-          phase3_button = _phase3_read_command_if_safe(CS.out.gasPressed, CS.out.brakePressed,
-                                                         CS.out.steeringPressed, CS.cruise_button != 0)
-          cruise_button = phase3_button if phase3_button is not None else CS.cruise_button
+          cruise_button = CS.cruise_button
 
         # unstick previous mocked button press
         if cruise_button == 1 and self.cruise_button_prev == 1:
@@ -140,13 +95,6 @@ class CarController(CarControllerBase, SnGCarController):
         self.cruise_button_prev = cruise_button
 
         can_sends.append(subarucan.create_preglobal_es_distance(self.packer, cruise_button, CS.es_distance_msg))
-
-        try:
-          with open(_PHASE3_EYESIGHT_STATE_FILE, "w") as f:
-            f.write(f"{int(CS.es_distance_msg.get('Car_Follow', 0))} "
-                    f"{CS.es_distance_msg.get('Close_Distance', 0.0)} {_time.time()}\n")
-        except OSError:
-          pass
 
     else:
       if self.frame % 10 == 0:
