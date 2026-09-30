@@ -16,6 +16,12 @@ from openpilot.system.hardware import HARDWARE
 
 from openpilot.sunnypilot.selfdrive.ui.quiet_mode import QuietMode
 
+try:
+  from openpilot.sunnypilot.soundmgr.common import get_override_path
+except Exception:
+  def get_override_path(filename: str) -> str | None:
+    return None
+
 SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
 MAX_VOLUME = 1.0
@@ -103,13 +109,25 @@ class Soundd(QuietMode):
     for sound in sound_list:
       filename, play_count, volume = sound_list[sound]
 
-      with wave.open(BASEDIR + "/selfdrive/assets/sounds/" + filename, 'r') as wavefile:
-        assert wavefile.getnchannels() == 1
-        assert wavefile.getsampwidth() == 2
-        assert wavefile.getframerate() == SAMPLE_RATE
+      override = get_override_path(filename)
+      if override is not None:
+        try:
+          self.loaded_sounds[sound] = self.read_sound(override)
+          continue
+        except Exception:
+          cloudlog.exception(f"soundd: custom sound for {filename} unusable, using built-in")
 
-        length = wavefile.getnframes()
-        self.loaded_sounds[sound] = np.frombuffer(wavefile.readframes(length), dtype=np.int16).astype(np.float32) / (2**16/2)
+      self.loaded_sounds[sound] = self.read_sound(BASEDIR + "/selfdrive/assets/sounds/" + filename)
+
+  @staticmethod
+  def read_sound(path: str) -> np.ndarray:
+    with wave.open(path, 'r') as wavefile:
+      assert wavefile.getnchannels() == 1
+      assert wavefile.getsampwidth() == 2
+      assert wavefile.getframerate() == SAMPLE_RATE
+
+      length = wavefile.getnframes()
+      return np.frombuffer(wavefile.readframes(length), dtype=np.int16).astype(np.float32) / (2**16/2)
 
   def get_sound_data(self, frames): # get "frames" worth of data from the current alert sound, looping when required
 
