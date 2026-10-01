@@ -22,11 +22,10 @@ def tone(freq, seconds=0.5, amp=0.5):
 
 @pytest.mark.parametrize("slot", SLOTS)
 def test_shipped_sounds_match_stock_loudness(slot):
+  # the shipped files are pre-leveled offline so soundd does no DSP at startup
   x = load(ROOT / "selfdrive/assets/sounds" / f"{slot}.wav")
-  y = L.level_like_stock(x, slot)
-  assert abs(L.a_weighted_level_db(y.astype(np.float64)) - L.stock_level_db(slot)) < 0.5
-  assert np.isfinite(y).all() and np.abs(y).max() <= 1.0
-  assert len(y) == len(x) and y.dtype == np.float32
+  assert abs(L.a_weighted_level_db(x.astype(np.float64)) - L.stock_level_db(slot)) < 0.5
+  assert np.isfinite(x).all() and np.abs(x).max() <= 1.0
 
 
 @pytest.mark.parametrize("slot", [s for s in SLOTS if s != "startup"])

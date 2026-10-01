@@ -68,23 +68,6 @@ if HARDWARE.get_device_type() == "tizi":
     AudibleAlert.disengage: ("disengage_tizi.wav", 1, MAX_VOLUME),
   })
 
-try:
-  from openpilot.sunnypilot.soundmgr.leveling import level_like_stock
-except Exception:
-  level_like_stock = None
-
-
-def level_sound(filename: str, data: np.ndarray) -> np.ndarray:
-  # custom sounds are usually quieter and lower pitched than stock; match the stock loudness for the slot
-  if level_like_stock is None or filename.endswith("_tizi.wav"):
-    return data
-  try:
-    return level_like_stock(data, filename.removesuffix(".wav"))
-  except Exception:
-    cloudlog.exception(f"soundd: could not level {filename}")
-    return data
-
-
 def check_selfdrive_timeout_alert(sm):
   ss_missing = time.monotonic() - sm.recv_time['selfdriveState']
 
@@ -126,8 +109,7 @@ class Soundd(QuietMode):
         assert wavefile.getframerate() == SAMPLE_RATE
 
         length = wavefile.getnframes()
-        data = np.frombuffer(wavefile.readframes(length), dtype=np.int16).astype(np.float32) / (2**16/2)
-        self.loaded_sounds[sound] = level_sound(filename, data)
+        self.loaded_sounds[sound] = np.frombuffer(wavefile.readframes(length), dtype=np.int16).astype(np.float32) / (2**16/2)
 
   def get_sound_data(self, frames): # get "frames" worth of data from the current alert sound, looping when required
 
