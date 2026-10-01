@@ -15,7 +15,6 @@ from openpilot.system import micd
 from openpilot.system.hardware import HARDWARE
 
 from openpilot.sunnypilot.selfdrive.ui.quiet_mode import QuietMode
-from openpilot.sunnypilot.soundmgr.refuse_gate import RefuseGate, STARTUP, SILENT
 
 SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
@@ -26,16 +25,18 @@ SELFDRIVE_STATE_TIMEOUT = 5 # 5 seconds
 FILTER_DT = 1. / (micd.SAMPLE_RATE / micd.FFT_SAMPLES)
 
 STARTUP_SOUND = 1000 # pseudo alert id, not part of the AudibleAlert enum
+STARTUP_REFUSE_WINDOW = 120 # seconds after soundd starts in which a refuse plays the startup sound instead
 
-# FrogPilot's volume calibration (same as upstream's tizi values): a ~5.5 dB louder floor in a quiet cabin,
-# identical to the old curve once the cabin is loud
-AMBIENT_DB = 30 # DB where MIN_VOLUME is applied
+AMBIENT_DB = 24 # DB where MIN_VOLUME is applied
 DB_SCALE = 30 # AMBIENT_DB + DB_SCALE is where MAX_VOLUME is applied
-VOLUME_BASE = 10
+
+VOLUME_BASE = 20
+if HARDWARE.get_device_type() == "tizi":
+  AMBIENT_DB = 30
+  VOLUME_BASE = 10
 
 AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 AudibleAlertSP = custom.SelfdriveStateSP.AudibleAlert
-MadsState = custom.ModularAssistiveDrivingSystem.ModularAssistiveDrivingSystemState
 
 
 sound_list_sp: dict[int, tuple[str, int | None, float]] = {
@@ -91,7 +92,7 @@ class Soundd(QuietMode):
     self.ramp_start_time = 0.
 
     self.selfdrive_timeout_alert = False
-    self.refuse_gate = RefuseGate(time.monotonic())
+    self.start_time = time.monotonic()
 
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
 
@@ -145,19 +146,15 @@ class Soundd(QuietMode):
       self.current_alert = new_alert
       self.current_sound_frame = 0
 
-  def gate_refuse(self, alert, sm):
-    mads_paused = sm['selfdriveStateSP'].mads.state.raw == MadsState.paused
-    decision = self.refuse_gate.decide(alert == AudibleAlert.refuse, sm['selfdriveState'].alertType, mads_paused, time.monotonic())
-    if alert == AudibleAlert.refuse:
-      if decision == STARTUP:
-        return STARTUP_SOUND
-      if decision == SILENT:
-        return AudibleAlert.none
+  def map_startup_alert(self, alert):
+    # the engage attempt at ignition (e.g. "Gear not D") would otherwise play the refuse sound
+    if alert == AudibleAlert.refuse and time.monotonic() - self.start_time < STARTUP_REFUSE_WINDOW:
+      return STARTUP_SOUND
     return alert
 
   def get_audible_alert(self, sm):
     if sm.updated['selfdriveState']:
-      new_alert = self.gate_refuse(sm['selfdriveState'].alertSound.raw, sm)
+      new_alert = self.map_startup_alert(sm['selfdriveState'].alertSound.raw)
       self.update_alert(new_alert)
     elif check_selfdrive_timeout_alert(sm):
       self.update_alert(AudibleAlert.warningImmediate)
@@ -181,7 +178,7 @@ class Soundd(QuietMode):
     # sounddevice must be imported after forking processes
     import sounddevice as sd
 
-    sm = messaging.SubMaster(['selfdriveState', 'selfdriveStateSP', 'soundPressure', 'carState'])
+    sm = messaging.SubMaster(['selfdriveState', 'selfdriveStateSP', 'soundPressure'])
 
     with self.get_stream(sd) as stream:
       rk = Ratekeeper(20)
@@ -197,7 +194,6 @@ class Soundd(QuietMode):
           self.spl_filter_weighted.update(sm["soundPressure"].soundPressureWeightedDb)
           self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
 
-        self.refuse_gate.update_cruise(sm['carState'].cruiseState.enabled, time.monotonic())
         self.get_audible_alert(sm)
 
         # Ramp up immediate warning sound over 4s
