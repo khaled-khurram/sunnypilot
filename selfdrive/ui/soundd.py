@@ -27,13 +27,11 @@ FILTER_DT = 1. / (micd.SAMPLE_RATE / micd.FFT_SAMPLES)
 
 STARTUP_SOUND = 1000 # pseudo alert id, not part of the AudibleAlert enum
 
-AMBIENT_DB = 24 # DB where MIN_VOLUME is applied
+# FrogPilot's volume calibration (same as upstream's tizi values): a ~5.5 dB louder floor in a quiet cabin,
+# identical to the old curve once the cabin is loud
+AMBIENT_DB = 30 # DB where MIN_VOLUME is applied
 DB_SCALE = 30 # AMBIENT_DB + DB_SCALE is where MAX_VOLUME is applied
-
-VOLUME_BASE = 20
-if HARDWARE.get_device_type() == "tizi":
-  AMBIENT_DB = 30
-  VOLUME_BASE = 10
+VOLUME_BASE = 10
 
 AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 AudibleAlertSP = custom.SelfdriveStateSP.AudibleAlert
