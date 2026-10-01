@@ -24,16 +24,10 @@ ALERT_RAMP_TIME = 4 # seconds to ramp to max volume for warningImmediate
 SELFDRIVE_STATE_TIMEOUT = 5 # 5 seconds
 FILTER_DT = 1. / (micd.SAMPLE_RATE / micd.FFT_SAMPLES)
 
-STARTUP_SOUND = 1000 # pseudo alert id, not part of the AudibleAlert enum
-STARTUP_REFUSE_WINDOW = 120 # seconds after soundd starts in which a refuse plays the startup sound instead
-
-AMBIENT_DB = 24 # DB where MIN_VOLUME is applied
+# FrogPilot's volume calibration: a louder floor in a quiet cabin, identical at full volume
+AMBIENT_DB = 30 # DB where MIN_VOLUME is applied
 DB_SCALE = 30 # AMBIENT_DB + DB_SCALE is where MAX_VOLUME is applied
-
-VOLUME_BASE = 20
-if HARDWARE.get_device_type() == "tizi":
-  AMBIENT_DB = 30
-  VOLUME_BASE = 10
+VOLUME_BASE = 10
 
 AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 AudibleAlertSP = custom.SelfdriveStateSP.AudibleAlert
@@ -57,8 +51,6 @@ sound_list: dict[int, tuple[str, int | None, float]] = {
 
   AudibleAlert.warningSoft: ("warning_soft.wav", None, MAX_VOLUME),
   AudibleAlert.warningImmediate: ("warning_immediate.wav", None, MAX_VOLUME),
-
-  STARTUP_SOUND: ("startup.wav", 1, MAX_VOLUME),
 
   **sound_list_sp,
 }
@@ -92,7 +84,6 @@ class Soundd(QuietMode):
     self.ramp_start_time = 0.
 
     self.selfdrive_timeout_alert = False
-    self.start_time = time.monotonic()
 
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
 
@@ -146,15 +137,9 @@ class Soundd(QuietMode):
       self.current_alert = new_alert
       self.current_sound_frame = 0
 
-  def map_startup_alert(self, alert):
-    # the engage attempt at ignition (e.g. "Gear not D") would otherwise play the refuse sound
-    if alert == AudibleAlert.refuse and time.monotonic() - self.start_time < STARTUP_REFUSE_WINDOW:
-      return STARTUP_SOUND
-    return alert
-
   def get_audible_alert(self, sm):
     if sm.updated['selfdriveState']:
-      new_alert = self.map_startup_alert(sm['selfdriveState'].alertSound.raw)
+      new_alert = sm['selfdriveState'].alertSound.raw
       self.update_alert(new_alert)
     elif check_selfdrive_timeout_alert(sm):
       self.update_alert(AudibleAlert.warningImmediate)
